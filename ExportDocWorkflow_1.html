@@ -19,6 +19,32 @@
 
   .mode-banner{background:#eef3fa;border:1px solid #c7d9f0;color:#0d2b52;padding:10px 16px;border-radius:8px;font-size:.82rem;margin-bottom:16px;}
 
+  /* ---------- Top section tabs ---------- */
+  .top-tabs{display:flex;gap:8px;margin-bottom:18px;}
+  .top-tab{background:#fff;border:1px solid var(--border);color:var(--muted);padding:9px 18px;border-radius:8px;font-size:.86rem;font-weight:600;cursor:pointer;}
+  .top-tab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+
+  /* ---------- Expenses / provider ledger ---------- */
+  .provider-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .provider-card:hover{border-color:var(--navy);}
+  .provider-card .pname{font-weight:700;color:var(--navy);font-size:1rem;}
+  .provider-card .ptype{font-size:.78rem;color:var(--muted);margin-top:2px;}
+  .provider-card .balance{font-size:1rem;font-weight:700;}
+  .balance.owe{color:#c0392b;}
+  .balance.clear{color:var(--green);}
+  .ledger-summary{display:flex;gap:24px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:18px;flex-wrap:wrap;}
+  .ledger-summary .stat{}
+  .ledger-summary .stat .label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
+  .ledger-summary .stat .value{font-size:1.2rem;font-weight:700;color:var(--navy);}
+  .ledger-table{width:100%;border-collapse:collapse;font-size:.85rem;background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+  .ledger-table th{background:#f1f4f8;padding:9px 10px;text-align:left;font-size:.72rem;color:var(--muted);text-transform:uppercase;}
+  .ledger-table td{padding:9px 10px;border-top:1px solid var(--border);}
+  .ledger-table .amt-charge{color:#c0392b;text-align:right;}
+  .ledger-table .amt-payment{color:var(--green);text-align:right;}
+  .ledger-table .amt-balance{text-align:right;font-weight:600;}
+  .txn-form{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:18px;}
+  .txn-form h3{margin:0 0 12px;font-size:.95rem;color:var(--navy);}
+
   /* ---------- List view ---------- */
   .add-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
   .add-card h2{margin:0 0 12px;font-size:1rem;color:var(--navy);}
@@ -151,6 +177,72 @@ function localDelete(id){
   localSave(arr);
 }
 
+// ---- Service providers + expense ledger (same local-storage pattern as shipments) ----
+const PROVIDERS_KEY = "exportDocWorkflow_providers_v1";
+const TXNS_KEY = "exportDocWorkflow_expenseTxns_v1";
+const PROVIDER_TYPES = ["Clearing Agent", "Freight Forwarder / Shipping Line", "Trucking / Transport", "Port / Terminal", "Bank Charges", "Other"];
+
+function listProviders(){ try{ return JSON.parse(localStorage.getItem(PROVIDERS_KEY)||"[]"); }catch(e){ return []; } }
+function saveProviders(arr){ localStorage.setItem(PROVIDERS_KEY, JSON.stringify(arr)); }
+function addProviderRecord(data){
+  const arr = listProviders();
+  const id = "prov_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
+  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
+  saveProviders(arr);
+  return id;
+}
+function deleteProviderRecord(id){ saveProviders(listProviders().filter(p => p.id !== id)); }
+
+function listTxns(){ try{ return JSON.parse(localStorage.getItem(TXNS_KEY)||"[]"); }catch(e){ return []; } }
+function saveTxns(arr){ localStorage.setItem(TXNS_KEY, JSON.stringify(arr)); }
+function addTxnRecord(data){
+  const arr = listTxns();
+  const id = "txn_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
+  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
+  saveTxns(arr);
+  return id;
+}
+function deleteTxnRecord(id){ saveTxns(listTxns().filter(t => t.id !== id)); }
+function txnsForProvider(providerId){
+  return listTxns().filter(t => t.providerId === providerId).sort((a,b) => new Date(a.date) - new Date(b.date));
+}
+function providerBalance(providerId){
+  return txnsForProvider(providerId).reduce((bal,t) => bal + (t.type==="charge" ? Number(t.amount||0) : -Number(t.amount||0)), 0);
+}
+
+// ---- Consignees (buyers) receivable ledger ----
+const CONSIGNEES_KEY = "exportDocWorkflow_consignees_v1";
+const CONSIGNEE_TXNS_KEY = "exportDocWorkflow_consigneeTxns_v1";
+
+function listConsignees(){ try{ return JSON.parse(localStorage.getItem(CONSIGNEES_KEY)||"[]"); }catch(e){ return []; } }
+function saveConsignees(arr){ localStorage.setItem(CONSIGNEES_KEY, JSON.stringify(arr)); }
+function addConsigneeRecord(data){
+  const arr = listConsignees();
+  const id = "cons_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
+  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
+  saveConsignees(arr);
+  return id;
+}
+function deleteConsigneeRecord(id){ saveConsignees(listConsignees().filter(c => c.id !== id)); }
+
+function listConsigneeTxns(){ try{ return JSON.parse(localStorage.getItem(CONSIGNEE_TXNS_KEY)||"[]"); }catch(e){ return []; } }
+function saveConsigneeTxns(arr){ localStorage.setItem(CONSIGNEE_TXNS_KEY, JSON.stringify(arr)); }
+function addConsigneeTxnRecord(data){
+  const arr = listConsigneeTxns();
+  const id = "ctxn_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
+  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
+  saveConsigneeTxns(arr);
+  return id;
+}
+function deleteConsigneeTxnRecord(id){ saveConsigneeTxns(listConsigneeTxns().filter(t => t.id !== id)); }
+function txnsForConsignee(consigneeId){
+  return listConsigneeTxns().filter(t => t.consigneeId === consigneeId).sort((a,b) => new Date(a.date) - new Date(b.date));
+}
+// For consignees: 'invoice' = we billed them (increases what they owe us), 'receipt' = they paid us (decreases it)
+function consigneeBalance(consigneeId){
+  return txnsForConsignee(consigneeId).reduce((bal,t) => bal + (t.type==="invoice" ? Number(t.amount||0) : -Number(t.amount||0)), 0);
+}
+
 const EXPORTERS = ["Royal Plastics & Household", "Babji Traders", "Babji Manufacturing"];
 
 const HEADER_FIELDS = [
@@ -256,9 +348,13 @@ const STAGES = [
 ];
 
 let shipments = [];
-let view = "list";          // 'list' | 'detail'
+let providers = [];
+let consignees = [];
+let view = "list";          // 'list' | 'detail' | 'expenses' | 'ledger' | 'consignees' | 'consigneeLedger'
 let currentShipId = null;
 let currentStageKey = "s1";
+let currentProviderId = null;
+let currentConsigneeId = null;
 let modalItemRows = [];
 
 function toast(msg, isError){
@@ -286,6 +382,8 @@ function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitP
 
 function refreshFromStorage(){
   shipments = localList();
+  providers = listProviders();
+  consignees = listConsignees();
   renderApp();
 }
 
@@ -293,16 +391,42 @@ function refreshFromStorage(){
 function renderApp(){
   const app = document.getElementById("app");
   const banner = `<div class="mode-banner">💾 Running on local browser storage right now — data stays on this device/browser only. Hook up Firebase later to sync across devices (see comment at top of the script).</div>`;
+  const tabs = `
+    <div class="top-tabs">
+      <button class="top-tab ${(view==='list'||view==='detail')?'active':''}" onclick="App.showShipmentsTab()">📦 Shipments</button>
+      <button class="top-tab ${(view==='expenses'||view==='ledger')?'active':''}" onclick="App.showExpensesTab()">💰 Expenses</button>
+      <button class="top-tab ${(view==='consignees'||view==='consigneeLedger')?'active':''}" onclick="App.showConsigneesTab()">👥 Consignees</button>
+    </div>`;
+
   if(view === "list"){
     document.getElementById("headerSub").textContent = "Fill each stage's form to generate its document";
-    app.innerHTML = banner + renderListView();
-  } else {
+    app.innerHTML = banner + tabs + renderListView();
+  } else if(view === "detail"){
     const s = shipments.find(x => x.id === currentShipId);
     if(!s){ view = "list"; renderApp(); return; }
     document.getElementById("headerSub").textContent = s.ref + (s.customer ? " — " + s.customer : "");
-    app.innerHTML = banner + renderDetailView(s);
+    app.innerHTML = banner + tabs + renderDetailView(s);
+  } else if(view === "expenses"){
+    document.getElementById("headerSub").textContent = "Service provider expense ledgers";
+    app.innerHTML = banner + tabs + renderExpensesView();
+  } else if(view === "ledger"){
+    const p = providers.find(x => x.id === currentProviderId);
+    if(!p){ view = "expenses"; renderApp(); return; }
+    document.getElementById("headerSub").textContent = p.name + " — ledger";
+    app.innerHTML = banner + tabs + renderLedgerView(p);
+  } else if(view === "consignees"){
+    document.getElementById("headerSub").textContent = "Consignee / buyer receivable ledgers";
+    app.innerHTML = banner + tabs + renderConsigneesView();
+  } else if(view === "consigneeLedger"){
+    const c = consignees.find(x => x.id === currentConsigneeId);
+    if(!c){ view = "consignees"; renderApp(); return; }
+    document.getElementById("headerSub").textContent = c.name + " — ledger";
+    app.innerHTML = banner + tabs + renderConsigneeLedgerView(c);
   }
 }
+function showShipmentsTab(){ view = "list"; currentShipId = null; renderApp(); }
+function showExpensesTab(){ view = "expenses"; currentProviderId = null; renderApp(); }
+function showConsigneesTab(){ view = "consignees"; currentConsigneeId = null; renderApp(); }
 
 // ================= LIST VIEW =================
 function renderListView(){
@@ -389,6 +513,298 @@ function openShipment(shipId){
   renderApp();
 }
 function backToList(){ view = "list"; currentShipId = null; renderApp(); }
+
+// ================= EXPENSES: PROVIDER LIST =================
+function renderExpensesView(){
+  const cards = providers.length === 0
+    ? `<div class="empty">No service providers yet. Add one below (clearing agent, shipping line, trucker, etc.).</div>`
+    : providers.map(p => {
+        const bal = providerBalance(p.id);
+        const balClass = bal > 0 ? "owe" : "clear";
+        const balText = bal > 0 ? `Owe: PKR ${bal.toLocaleString()}` : (bal < 0 ? `Advance: PKR ${Math.abs(bal).toLocaleString()}` : "Settled");
+        return `
+        <div class="provider-card" onclick="App.openLedger('${p.id}')">
+          <div>
+            <div class="pname">${escapeHtml(p.name)}</div>
+            <div class="ptype">${escapeHtml(p.type)}</div>
+          </div>
+          <div class="right" style="display:flex;align-items:center;gap:14px;">
+            <div class="balance ${balClass}">${balText}</div>
+            <button class="del-btn" onclick="event.stopPropagation(); App.deleteProvider('${p.id}','${escapeHtml(p.name)}')">✕</button>
+          </div>
+        </div>`;
+      }).join("");
+
+  const typeOptions = PROVIDER_TYPES.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
+
+  return `
+    <div class="add-card">
+      <h2>Add Service Provider</h2>
+      <div class="add-row">
+        <input id="newProviderName" type="text" placeholder="Provider Name (e.g. Al-Barkat Clearing Agency)">
+        <select id="newProviderType" style="flex:1;min-width:160px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">${typeOptions}</select>
+        <input id="newProviderContact" type="text" placeholder="Contact (optional)">
+        <button id="addProviderBtn" onclick="App.addProvider()">Add Provider</button>
+      </div>
+    </div>
+    <div id="providerList">${cards}</div>`;
+}
+
+function addProvider(){
+  const nameEl = document.getElementById("newProviderName");
+  const typeEl = document.getElementById("newProviderType");
+  const contactEl = document.getElementById("newProviderContact");
+  const name = nameEl.value.trim();
+  if(!name){ toast("Enter a provider name", true); return; }
+  addProviderRecord({ name, type: typeEl.value, contact: contactEl.value.trim() });
+  nameEl.value = ""; contactEl.value = "";
+  toast("Provider added");
+  refreshFromStorage();
+}
+function deleteProvider(id, name){
+  if(!confirm(`Delete provider "${name}"? Its ledger entries will also be removed.`)) return;
+  listTxns().filter(t => t.providerId === id).forEach(t => deleteTxnRecord(t.id));
+  deleteProviderRecord(id);
+  toast("Provider deleted");
+  refreshFromStorage();
+}
+function openLedger(providerId){
+  currentProviderId = providerId;
+  view = "ledger";
+  renderApp();
+}
+function backToExpenses(){ view = "expenses"; currentProviderId = null; renderApp(); }
+
+// ================= EXPENSES: PROVIDER LEDGER =================
+function renderLedgerView(p){
+  const txns = txnsForProvider(p.id);
+  let running = 0;
+  const rows = txns.map(t => {
+    running += (t.type==="charge" ? Number(t.amount||0) : -Number(t.amount||0));
+    return `
+      <tr>
+        <td>${escapeHtml(t.date||'')}</td>
+        <td>${escapeHtml(t.description||'')}</td>
+        <td>${escapeHtml(t.shipmentRef||'')}</td>
+        <td class="amt-charge">${t.type==="charge" ? "PKR "+Number(t.amount||0).toLocaleString() : ""}</td>
+        <td class="amt-payment">${t.type==="payment" ? "PKR "+Number(t.amount||0).toLocaleString() : ""}</td>
+        <td class="amt-balance">PKR ${running.toLocaleString()}</td>
+        <td><button class="del-btn" onclick="App.deleteTxn('${t.id}')">✕</button></td>
+      </tr>`;
+  }).join("");
+
+  const totalCharges = txns.filter(t=>t.type==="charge").reduce((s,t)=>s+Number(t.amount||0),0);
+  const totalPayments = txns.filter(t=>t.type==="payment").reduce((s,t)=>s+Number(t.amount||0),0);
+  const balance = totalCharges - totalPayments;
+
+  const shipmentOptions = `<option value="">— none —</option>` + shipments.map(s => `<option value="${escapeHtml(s.ref)}">${escapeHtml(s.ref)}</option>`).join("");
+
+  return `
+    <button class="back-btn" onclick="App.backToExpenses()">← All Providers</button>
+    <div class="detail-head">
+      <div>
+        <div class="ref">${escapeHtml(p.name)}</div>
+        <div class="cust">${escapeHtml(p.type)}${p.contact ? ' · ' + escapeHtml(p.contact) : ''}</div>
+      </div>
+    </div>
+
+    <div class="ledger-summary">
+      <div class="stat"><div class="label">Total Charges</div><div class="value">PKR ${totalCharges.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Total Paid</div><div class="value">PKR ${totalPayments.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Balance ${balance>0?'(Owed)':'(Settled/Advance)'}</div><div class="value" style="color:${balance>0?'#c0392b':'#3f8f4f'}">PKR ${balance.toLocaleString()}</div></div>
+    </div>
+
+    ${txns.length === 0 ? `<div class="empty">No transactions yet.</div>` : `
+    <table class="ledger-table">
+      <thead><tr><th>Date</th><th>Description</th><th>Shipment</th><th>Charge</th><th>Paid</th><th>Balance</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`}
+
+    <div class="txn-form">
+      <h3>Add Transaction</h3>
+      <div class="field-grid">
+        <div class="field"><label>Type</label>
+          <select id="txnType"><option value="charge">Charge (they billed us)</option><option value="payment">Payment (we paid them)</option></select>
+        </div>
+        <div class="field"><label>Date</label><input id="txnDate" type="date"></div>
+        <div class="field"><label>Amount (PKR)</label><input id="txnAmount" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="0"></div>
+        <div class="field"><label>Related Shipment (optional)</label><select id="txnShipment">${shipmentOptions}</select></div>
+        <div class="field" style="grid-column:1/-1;"><label>Description</label><input id="txnDesc" type="text" placeholder="e.g. Customs clearance charges, B/L fee, trucking to port..."></div>
+      </div>
+      <div class="page-actions" style="border-top:none;margin-top:12px;padding-top:0;">
+        <div></div>
+        <div class="save-group"><button class="btn-nextstage" onclick="App.addTxn('${p.id}')">Add Transaction</button></div>
+      </div>
+    </div>`;
+}
+
+function addTxn(providerId){
+  const type = document.getElementById("txnType").value;
+  const date = document.getElementById("txnDate").value;
+  const amount = document.getElementById("txnAmount").value;
+  const shipmentRef = document.getElementById("txnShipment").value;
+  const description = document.getElementById("txnDesc").value.trim();
+  if(!amount || isNaN(Number(amount)) || Number(amount) <= 0){ toast("Enter a valid amount", true); return; }
+  if(!description){ toast("Enter a description", true); return; }
+  addTxnRecord({ providerId, type, date: date || new Date().toISOString().slice(0,10), amount: Number(amount), shipmentRef, description });
+  toast("Transaction added");
+  refreshFromStorage();
+  view = "ledger";
+  renderApp();
+}
+function deleteTxn(id){
+  if(!confirm("Delete this transaction?")) return;
+  deleteTxnRecord(id);
+  toast("Transaction deleted");
+  refreshFromStorage();
+  view = "ledger";
+  renderApp();
+}
+
+// ================= CONSIGNEES: LIST =================
+function renderConsigneesView(){
+  const cards = consignees.length === 0
+    ? `<div class="empty">No consignees yet. Add a buyer below to start tracking what they owe you.</div>`
+    : consignees.map(c => {
+        const bal = consigneeBalance(c.id);
+        const balClass = bal > 0 ? "owe" : "clear";
+        const balText = bal > 0 ? `Receivable: PKR ${bal.toLocaleString()}` : (bal < 0 ? `Advance received: PKR ${Math.abs(bal).toLocaleString()}` : "Settled");
+        return `
+        <div class="provider-card" onclick="App.openConsigneeLedger('${c.id}')">
+          <div>
+            <div class="pname">${escapeHtml(c.name)}</div>
+            <div class="ptype">${escapeHtml(c.address||'')}${c.contact ? ' · ' + escapeHtml(c.contact) : ''}</div>
+          </div>
+          <div class="right" style="display:flex;align-items:center;gap:14px;">
+            <div class="balance ${balClass}">${balText}</div>
+            <button class="del-btn" onclick="event.stopPropagation(); App.deleteConsignee('${c.id}','${escapeHtml(c.name)}')">✕</button>
+          </div>
+        </div>`;
+      }).join("");
+
+  return `
+    <div class="add-card">
+      <h2>Add Consignee</h2>
+      <div class="add-row">
+        <input id="newConsigneeName" type="text" placeholder="Consignee / Buyer Name">
+        <input id="newConsigneeAddress" type="text" placeholder="Address (optional)">
+        <input id="newConsigneeContact" type="text" placeholder="Contact (optional)">
+        <button id="addConsigneeBtn" onclick="App.addConsignee()">Add Consignee</button>
+      </div>
+    </div>
+    <div id="consigneeList">${cards}</div>`;
+}
+
+function addConsignee(){
+  const nameEl = document.getElementById("newConsigneeName");
+  const addrEl = document.getElementById("newConsigneeAddress");
+  const contactEl = document.getElementById("newConsigneeContact");
+  const name = nameEl.value.trim();
+  if(!name){ toast("Enter a consignee name", true); return; }
+  addConsigneeRecord({ name, address: addrEl.value.trim(), contact: contactEl.value.trim() });
+  nameEl.value = ""; addrEl.value = ""; contactEl.value = "";
+  toast("Consignee added");
+  refreshFromStorage();
+}
+function deleteConsignee(id, name){
+  if(!confirm(`Delete consignee "${name}"? Its ledger entries will also be removed.`)) return;
+  listConsigneeTxns().filter(t => t.consigneeId === id).forEach(t => deleteConsigneeTxnRecord(t.id));
+  deleteConsigneeRecord(id);
+  toast("Consignee deleted");
+  refreshFromStorage();
+}
+function openConsigneeLedger(consigneeId){
+  currentConsigneeId = consigneeId;
+  view = "consigneeLedger";
+  renderApp();
+}
+function backToConsignees(){ view = "consignees"; currentConsigneeId = null; renderApp(); }
+
+// ================= CONSIGNEES: LEDGER =================
+function renderConsigneeLedgerView(c){
+  const txns = txnsForConsignee(c.id);
+  let running = 0;
+  const rows = txns.map(t => {
+    running += (t.type==="invoice" ? Number(t.amount||0) : -Number(t.amount||0));
+    return `
+      <tr>
+        <td>${escapeHtml(t.date||'')}</td>
+        <td>${escapeHtml(t.description||'')}</td>
+        <td>${escapeHtml(t.shipmentRef||'')}</td>
+        <td class="amt-charge">${t.type==="invoice" ? "PKR "+Number(t.amount||0).toLocaleString() : ""}</td>
+        <td class="amt-payment">${t.type==="receipt" ? "PKR "+Number(t.amount||0).toLocaleString() : ""}</td>
+        <td class="amt-balance">PKR ${running.toLocaleString()}</td>
+        <td><button class="del-btn" onclick="App.deleteConsigneeTxn('${t.id}')">✕</button></td>
+      </tr>`;
+  }).join("");
+
+  const totalInvoiced = txns.filter(t=>t.type==="invoice").reduce((s,t)=>s+Number(t.amount||0),0);
+  const totalReceived = txns.filter(t=>t.type==="receipt").reduce((s,t)=>s+Number(t.amount||0),0);
+  const balance = totalInvoiced - totalReceived;
+
+  const shipmentOptions = `<option value="">— none —</option>` + shipments.map(s => `<option value="${escapeHtml(s.ref)}">${escapeHtml(s.ref)}</option>`).join("");
+
+  return `
+    <button class="back-btn" onclick="App.backToConsignees()">← All Consignees</button>
+    <div class="detail-head">
+      <div>
+        <div class="ref">${escapeHtml(c.name)}</div>
+        <div class="cust">${escapeHtml(c.address||'')}${c.contact ? ' · ' + escapeHtml(c.contact) : ''}</div>
+      </div>
+    </div>
+
+    <div class="ledger-summary">
+      <div class="stat"><div class="label">Total Invoiced</div><div class="value">PKR ${totalInvoiced.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Total Received</div><div class="value">PKR ${totalReceived.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Balance ${balance>0?'(Receivable)':'(Settled/Advance)'}</div><div class="value" style="color:${balance>0?'#c0392b':'#3f8f4f'}">PKR ${balance.toLocaleString()}</div></div>
+    </div>
+
+    ${txns.length === 0 ? `<div class="empty">No transactions yet.</div>` : `
+    <table class="ledger-table">
+      <thead><tr><th>Date</th><th>Description</th><th>Shipment</th><th>Invoiced</th><th>Received</th><th>Balance</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`}
+
+    <div class="txn-form">
+      <h3>Add Transaction</h3>
+      <div class="field-grid">
+        <div class="field"><label>Type</label>
+          <select id="ctxnType"><option value="invoice">Invoice (we billed them)</option><option value="receipt">Receipt (payment received)</option></select>
+        </div>
+        <div class="field"><label>Date</label><input id="ctxnDate" type="date"></div>
+        <div class="field"><label>Amount (PKR)</label><input id="ctxnAmount" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="0"></div>
+        <div class="field"><label>Related Shipment (optional)</label><select id="ctxnShipment">${shipmentOptions}</select></div>
+        <div class="field" style="grid-column:1/-1;"><label>Description</label><input id="ctxnDesc" type="text" placeholder="e.g. Commercial invoice EXP-2026-014, T/T received..."></div>
+      </div>
+      <div class="page-actions" style="border-top:none;margin-top:12px;padding-top:0;">
+        <div></div>
+        <div class="save-group"><button class="btn-nextstage" onclick="App.addConsigneeTxn('${c.id}')">Add Transaction</button></div>
+      </div>
+    </div>`;
+}
+
+function addConsigneeTxn(consigneeId){
+  const type = document.getElementById("ctxnType").value;
+  const date = document.getElementById("ctxnDate").value;
+  const amount = document.getElementById("ctxnAmount").value;
+  const shipmentRef = document.getElementById("ctxnShipment").value;
+  const description = document.getElementById("ctxnDesc").value.trim();
+  if(!amount || isNaN(Number(amount)) || Number(amount) <= 0){ toast("Enter a valid amount", true); return; }
+  if(!description){ toast("Enter a description", true); return; }
+  addConsigneeTxnRecord({ consigneeId, type, date: date || new Date().toISOString().slice(0,10), amount: Number(amount), shipmentRef, description });
+  toast("Transaction added");
+  refreshFromStorage();
+  view = "consigneeLedger";
+  renderApp();
+}
+function deleteConsigneeTxn(id){
+  if(!confirm("Delete this transaction?")) return;
+  deleteConsigneeTxnRecord(id);
+  toast("Transaction deleted");
+  refreshFromStorage();
+  view = "consigneeLedger";
+  renderApp();
+}
 
 // ================= DETAIL / WIZARD VIEW =================
 function renderDetailView(s){
@@ -646,7 +1062,10 @@ function printDocument(stage, header, docData, ref, customer){
 
 window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
-  saveStageData, addItemRow, removeItemRow, render: renderApp
+  saveStageData, addItemRow, removeItemRow, render: renderApp,
+  showShipmentsTab, showExpensesTab, showConsigneesTab,
+  addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
+  addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn
 };
 refreshFromStorage();
 </script>
