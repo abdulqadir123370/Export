@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Export Document Workflow</title>
+<style>
+  :root{
+    --navy:#0d2b52; --gold:#d4a13d; --green:#3f8f4f; --amber:#e0a324;
+    --orange:#e0762b; --purple:#7c5bc4; --teal:#2ab5a8; --blue:#2f7fd4;
+    --bg:#f4f6f9; --card:#ffffff; --border:#e2e6ec; --text:#1f2937; --muted:#6b7280;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);}
+  header{background:linear-gradient(120deg,var(--navy),#123a6b);color:#fff;padding:18px 24px;position:sticky;top:0;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.15);}
+  header h1{margin:0;font-size:1.3rem;letter-spacing:.5px;}
+  header .sub{font-size:.78rem;color:#cfe0f7;margin-top:3px;}
+  .wrap{max-width:1080px;margin:0 auto;padding:20px 16px 80px;}
+
+  .mode-banner{background:#eef3fa;border:1px solid #c7d9f0;color:#0d2b52;padding:10px 16px;border-radius:8px;font-size:.82rem;margin-bottom:16px;}
+
+  /* ---------- List view ---------- */
+  .add-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .add-card h2{margin:0 0 12px;font-size:1rem;color:var(--navy);}
+  .add-row{display:flex;gap:10px;flex-wrap:wrap;}
+  .add-row input{flex:1;min-width:160px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;}
+  .add-row button{background:var(--navy);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:.9rem;cursor:pointer;font-weight:600;}
+  .add-row button:disabled{opacity:.5;cursor:not-allowed;}
+
+  .search{margin-bottom:16px;}
+  .search input{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;}
+
+  .shipment-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .shipment-card:hover{border-color:var(--navy);}
+  .shipment-card .ref{font-weight:700;color:var(--navy);font-size:1rem;}
+  .shipment-card .cust{font-size:.82rem;color:var(--muted);margin-top:2px;}
+  .shipment-card .right{display:flex;align-items:center;gap:14px;}
+  .progress-wrap{width:100px;}
+  .progress-bar{background:#e9edf3;border-radius:6px;height:8px;overflow:hidden;}
+  .progress-fill{height:100%;background:var(--green);transition:width .3s;}
+  .progress-label{font-size:.72rem;color:var(--muted);text-align:right;margin-top:3px;}
+  .del-btn{background:none;border:none;color:#c0392b;font-size:1.1rem;cursor:pointer;padding:2px 6px;}
+  .empty{text-align:center;color:var(--muted);padding:40px 10px;font-size:.9rem;}
+
+  /* ---------- Detail / wizard view ---------- */
+  .back-btn{background:none;border:none;color:var(--navy);font-size:.88rem;cursor:pointer;font-weight:600;padding:0 0 14px;}
+  .detail-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;flex-wrap:wrap;gap:12px;}
+  .detail-head .ref{font-size:1.3rem;font-weight:700;color:var(--navy);}
+  .detail-head .cust{color:var(--muted);font-size:.9rem;}
+  .detail-progress{width:180px;}
+
+  .stage-nav{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:22px;}
+  .stage-pill{border:1px solid var(--border);background:#fff;border-radius:10px;padding:10px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:.15s;}
+  .stage-pill:hover{border-color:var(--navy);}
+  .stage-pill.active{border-color:var(--navy);background:#eef3fa;box-shadow:0 0 0 2px rgba(13,43,82,.12);}
+  .stage-pill .num{width:22px;height:22px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0;}
+  .stage-pill .name{font-size:.76rem;line-height:1.2;font-weight:600;}
+  .stage-pill .status{font-size:.68rem;color:var(--muted);margin-top:1px;}
+  .stage-pill.done .status{color:var(--green);}
+
+  .page-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .page-card h2{margin:0 0 2px;color:var(--navy);font-size:1.15rem;}
+  .page-card .page-sub{font-size:.8rem;color:var(--muted);margin-bottom:20px;}
+  .section-title{font-size:.78rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700;margin:22px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px;}
+  .section-title:first-of-type{margin-top:0;}
+
+  .field-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .field-grid.single{grid-template-columns:1fr;}
+  .field{display:flex;flex-direction:column;gap:4px;}
+  .field label{font-size:.76rem;color:var(--muted);font-weight:600;}
+  .field input, .field select, .field textarea{padding:9px 11px;border:1px solid var(--border);border-radius:6px;font-size:.88rem;font-family:inherit;}
+  .field textarea{resize:vertical;min-height:70px;}
+
+  .items-table{width:100%;border-collapse:collapse;margin-bottom:10px;font-size:.84rem;}
+  .items-table th{background:#f1f4f8;padding:7px 8px;text-align:left;font-size:.72rem;color:var(--muted);}
+  .items-table td{padding:4px;}
+  .items-table input{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:5px;font-size:.84rem;}
+  .items-table .rm{color:#c0392b;background:none;border:none;cursor:pointer;font-size:1rem;}
+  .add-item-btn{background:#eef2f7;border:1px dashed var(--border);color:var(--navy);padding:7px 14px;border-radius:6px;font-size:.8rem;cursor:pointer;margin-bottom:6px;}
+
+  .page-actions{display:flex;justify-content:space-between;align-items:center;margin-top:26px;padding-top:18px;border-top:1px solid var(--border);}
+  .page-actions .save-group{display:flex;gap:10px;}
+  .page-actions button{padding:10px 20px;border-radius:8px;font-size:.86rem;cursor:pointer;font-weight:600;border:none;}
+  .btn-save{background:#eef1f5;color:var(--text);}
+  .btn-print{background:var(--green);color:#fff;}
+  .btn-nextstage{background:var(--navy);color:#fff;}
+
+  .status-msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 18px;border-radius:20px;font-size:.82rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:200;max-width:80vw;text-align:center;}
+  .status-msg.show{opacity:1;}
+  .status-msg.error{background:#c0392b;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Export Document Workflow</h1>
+  <div class="sub" id="headerSub">Fill each stage's form to generate its document</div>
+</header>
+
+<div class="wrap" id="app"></div>
+
+<div id="statusMsg" class="status-msg"></div>
+
+<script>
+/* =========================================================================
+   STORAGE LAYER
+   Currently: browser localStorage, so you can build/test without Firebase.
+   Later: swap this block for Firestore calls — the shipment object shape
+   (ref, customer, header, items, stages, documents, createdAt) stays the
+   same, so the rest of the app (rendering, forms, printing) doesn't change.
+   Just replace localAdd/localUpdate/localDelete/localList + the render
+   subscription at the bottom with addDoc/updateDoc/deleteDoc/onSnapshot,
+   same as the earlier Firebase version of this file.
+   ========================================================================= */
+const STORAGE_KEY = "exportDocWorkflow_shipments_v1";
+
+function localList(){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
+  catch(e){ console.error(e); return []; }
+}
+function localSave(arr){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+}
+function localAdd(data){
+  const arr = localList();
+  const id = "sh_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
+  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
+  localSave(arr);
+  return id;
+}
+function applyDotUpdates(obj, updates){
+  for(const key in updates){
+    const parts = key.split(".");
+    let cur = obj;
+    for(let i=0;i<parts.length-1;i++){
+      if(typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length-1]] = updates[key];
+  }
+}
+function localUpdate(id, updates){
+  const arr = localList();
+  const idx = arr.findIndex(x => x.id === id);
+  if(idx === -1) return;
+  applyDotUpdates(arr[idx], updates);
+  localSave(arr);
+}
+function localDelete(id){
+  const arr = localList().filter(x => x.id !== id);
+  localSave(arr);
+}
+
+const EXPORTERS = ["Royal Plastics & Household", "Babji Traders", "Babji Manufacturing"];
+
+const HEADER_FIELDS = [
+  { name:"exporterEntity", label:"Exporter Entity", type:"select", options:EXPORTERS, default:EXPORTERS[0] },
+  { name:"exporterAddress", label:"Exporter Address", type:"text" },
+  { name:"buyerAddress", label:"Buyer Address", type:"text" },
+  { name:"consignee", label:"Consignee (if different)", type:"text" },
+  { name:"notifyParty", label:"Notify Party", type:"text" },
+  { name:"portOfLoading", label:"Port of Loading", type:"text", default:"Karachi, Pakistan" },
+  { name:"portOfDischarge", label:"Port of Discharge", type:"text" },
+  { name:"finalDestination", label:"Final Destination", type:"text" },
+  { name:"currency", label:"Currency", type:"text", default:"USD" },
+  { name:"incoterm", label:"Incoterm", type:"select", options:["FOB","CIF","CNF","EXW","FCA"], default:"FOB" },
+  { name:"paymentTerms", label:"Payment Terms", type:"text" },
+];
+
+const STAGES = [
+  { key:"s1", num:1, label:"Proforma Invoice", short:"Proforma Invoice", color:"var(--navy)", hasItems:true,
+    extraFields:[
+      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceDate",label:"Invoice Date",type:"date"},
+      {name:"validityDate",label:"Validity Date",type:"date"},
+      {name:"bankBeneficiary",label:"Bank Beneficiary",type:"text"},
+      {name:"bankName",label:"Bank Name",type:"text"},
+      {name:"accountNo",label:"Account No / IBAN",type:"text"},
+      {name:"swiftCode",label:"SWIFT Code",type:"text"},
+    ]},
+  { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:true,
+    extraFields:[
+      {name:"loadingDate",label:"Loading Date",type:"date"},
+      {name:"truckNo",label:"Truck No",type:"text"},
+      {name:"driverName",label:"Driver Name",type:"text"},
+      {name:"warehouseLocation",label:"Warehouse / Location",type:"text"},
+    ]},
+  { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:true,
+    extraFields:[
+      {name:"packingDate",label:"Packing Date",type:"date"},
+      {name:"totalCartons",label:"Total Cartons",type:"text"},
+      {name:"grossWeight",label:"Gross Weight (kg)",type:"text"},
+      {name:"netWeight",label:"Net Weight (kg)",type:"text"},
+      {name:"measurementCBM",label:"Measurement (CBM)",type:"text"},
+    ]},
+  { key:"s4", num:4, label:"Commercial Invoice (Customer) - Optional", short:"Comm. Invoice (Customer)", color:"var(--amber)", optional:true, hasItems:true,
+    extraFields:[
+      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceDate",label:"Invoice Date",type:"date"},
+    ]},
+  { key:"s5", num:5, label:"Commercial Invoice (Bank)", short:"Comm. Invoice (Bank)", color:"var(--amber)", hasItems:true,
+    extraFields:[
+      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceDate",label:"Invoice Date",type:"date"},
+      {name:"lcNumber",label:"L/C Number",type:"text"},
+      {name:"lcDate",label:"L/C Date",type:"date"},
+      {name:"bankName",label:"Bank Name",type:"text"},
+    ]},
+  { key:"s6", num:6, label:"Commercial Invoice with SS Number", short:"Comm. Invoice (SS No.)", color:"var(--orange)", hasItems:true,
+    extraFields:[
+      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceDate",label:"Invoice Date",type:"date"},
+      {name:"ssNumber",label:"SS Number",type:"text"},
+      {name:"ssDate",label:"SS Date",type:"date"},
+    ]},
+  { key:"s7", num:7, label:"Contract - Optional", short:"Contract", color:"var(--purple)", optional:true, hasItems:false,
+    extraFields:[
+      {name:"contractNo",label:"Contract No",type:"text"},
+      {name:"contractDate",label:"Contract Date",type:"date"},
+      {name:"termsText",label:"Terms & Conditions",type:"textarea"},
+    ]},
+  { key:"s8", num:8, label:"B/L Draft", short:"B/L Draft", color:"var(--purple)", hasItems:true,
+    extraFields:[
+      {name:"blNo",label:"B/L No",type:"text"},
+      {name:"blDate",label:"B/L Date",type:"date"},
+      {name:"shipperName",label:"Shipper Name",type:"text"},
+      {name:"vessel",label:"Vessel",type:"text"},
+      {name:"voyageNo",label:"Voyage No",type:"text"},
+      {name:"containerNos",label:"Container No(s)",type:"text"},
+      {name:"freightTerms",label:"Freight Terms",type:"select",options:["Prepaid","Collect"]},
+      {name:"placeOfIssue",label:"Place of Issue",type:"text"},
+    ]},
+  { key:"s9", num:9, label:"Certificate of Origin", short:"Certificate of Origin", color:"var(--teal)", hasItems:true,
+    extraFields:[
+      {name:"certNo",label:"Certificate No",type:"text"},
+      {name:"certDate",label:"Certificate Date",type:"date"},
+      {name:"countryOfOrigin",label:"Country of Origin",type:"text",default:"Pakistan"},
+      {name:"issuingAuthority",label:"Issuing Authority",type:"text"},
+    ]},
+  { key:"s10", num:10, label:"Proforma Invoice (Saif Al Sahra)", short:"Proforma (Saif Al Sahra)", color:"var(--teal)", hasItems:true,
+    extraFields:[
+      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceDate",label:"Invoice Date",type:"date"},
+      {name:"validityDate",label:"Validity Date",type:"date"},
+      {name:"buyerOverride",label:"Buyer Name",type:"text",default:"Saif Al Sahra"},
+    ]},
+  { key:"s11", num:11, label:"Tax Invoice (Saif Al Sahra)", short:"Tax Invoice (Saif Al Sahra)", color:"var(--blue)", hasItems:true,
+    extraFields:[
+      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceDate",label:"Invoice Date",type:"date"},
+      {name:"buyerOverride",label:"Buyer Name",type:"text",default:"Saif Al Sahra"},
+      {name:"ntn",label:"NTN",type:"text"},
+      {name:"salesTaxNo",label:"Sales Tax Reg No",type:"text"},
+      {name:"taxRate",label:"Tax Rate (%)",type:"text"},
+    ]},
+];
+
+let shipments = [];
+let view = "list";          // 'list' | 'detail'
+let currentShipId = null;
+let currentStageKey = "s1";
+let modalItemRows = [];
+
+function toast(msg, isError){
+  const el = document.getElementById("statusMsg");
+  el.textContent = msg;
+  el.classList.toggle("error", !!isError);
+  el.classList.add("show");
+  setTimeout(()=>el.classList.remove("show"), isError ? 4000 : 2000);
+}
+function fmtDate(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  if(isNaN(d)) return "";
+  return d.toLocaleDateString("en-GB", { day:"2-digit", month:"short" });
+}
+function escapeHtml(str){
+  return String(str==null?"":str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function emptyStages(){
+  const obj = {};
+  STAGES.forEach(s => obj[s.key] = { done:false, completedAt:null });
+  return obj;
+}
+function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
+
+function refreshFromStorage(){
+  shipments = localList();
+  renderApp();
+}
+
+// ================= ROOT RENDER =================
+function renderApp(){
+  const app = document.getElementById("app");
+  const banner = `<div class="mode-banner">💾 Running on local browser storage right now — data stays on this device/browser only. Hook up Firebase later to sync across devices (see comment at top of the script).</div>`;
+  if(view === "list"){
+    document.getElementById("headerSub").textContent = "Fill each stage's form to generate its document";
+    app.innerHTML = banner + renderListView();
+  } else {
+    const s = shipments.find(x => x.id === currentShipId);
+    if(!s){ view = "list"; renderApp(); return; }
+    document.getElementById("headerSub").textContent = s.ref + (s.customer ? " — " + s.customer : "");
+    app.innerHTML = banner + renderDetailView(s);
+  }
+}
+
+// ================= LIST VIEW =================
+function renderListView(){
+  const filter = (document.getElementById("searchBox")?.value || "").trim().toLowerCase();
+  const filtered = shipments.filter(s =>
+    !filter || (s.ref||"").toLowerCase().includes(filter) || (s.customer||"").toLowerCase().includes(filter)
+  );
+
+  const cards = filtered.length === 0
+    ? `<div class="empty">No shipments yet. Add one above to get started.</div>`
+    : filtered.map(s => {
+        const stages = s.stages || emptyStages();
+        const doneCount = STAGES.filter(st => stages[st.key]?.done).length;
+        const pct = Math.round((doneCount / STAGES.length) * 100);
+        return `
+        <div class="shipment-card" onclick="App.openShipment('${s.id}')">
+          <div>
+            <div class="ref">${escapeHtml(s.ref || '(no ref)')}</div>
+            <div class="cust">${escapeHtml(s.customer || '')}</div>
+          </div>
+          <div class="right">
+            <div class="progress-wrap">
+              <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+              <div class="progress-label">${doneCount}/${STAGES.length} documents</div>
+            </div>
+            <button class="del-btn" onclick="event.stopPropagation(); App.deleteShipment('${s.id}','${escapeHtml(s.ref||'')}')">✕</button>
+          </div>
+        </div>`;
+      }).join("");
+
+  return `
+    <div class="add-card">
+      <h2>New Shipment</h2>
+      <div class="add-row">
+        <input id="newRef" type="text" placeholder="Shipment / Invoice Ref (e.g. EXP-2026-014)">
+        <input id="newCustomer" type="text" placeholder="Buyer / Customer Name">
+        <button id="addBtn" onclick="App.addShipment()">Add Shipment</button>
+      </div>
+    </div>
+    <div class="search">
+      <input id="searchBox" type="text" placeholder="Search by reference or customer..." oninput="App.render()">
+    </div>
+    <div id="list">${cards}</div>`;
+}
+
+function addShipment(){
+  const refEl = document.getElementById("newRef");
+  const custEl = document.getElementById("newCustomer");
+  const ref = refEl.value.trim();
+  const customer = custEl.value.trim();
+  if(!ref){ toast("Enter a shipment reference", true); return; }
+  try{
+    const header = {};
+    HEADER_FIELDS.forEach(f => header[f.name] = f.default || "");
+    localAdd({
+      ref, customer, header,
+      items: [emptyItem()],
+      stages: emptyStages(),
+      documents: {}
+    });
+    refEl.value = ""; custEl.value = "";
+    toast("Shipment added");
+    refreshFromStorage();
+  }catch(err){
+    console.error(err);
+    toast("Error adding shipment: " + err.message, true);
+  }
+}
+
+function deleteShipment(shipId, ref){
+  if(!confirm(`Delete shipment "${ref}"? This cannot be undone.`)) return;
+  localDelete(shipId);
+  toast("Shipment deleted");
+  refreshFromStorage();
+}
+
+function openShipment(shipId){
+  currentShipId = shipId;
+  const s = shipments.find(x => x.id === shipId);
+  const stages = s?.stages || emptyStages();
+  const firstIncomplete = STAGES.find(st => !stages[st.key]?.done);
+  currentStageKey = firstIncomplete ? firstIncomplete.key : "s1";
+  view = "detail";
+  renderApp();
+}
+function backToList(){ view = "list"; currentShipId = null; renderApp(); }
+
+// ================= DETAIL / WIZARD VIEW =================
+function renderDetailView(s){
+  const stages = s.stages || emptyStages();
+  const doneCount = STAGES.filter(st => stages[st.key]?.done).length;
+  const pct = Math.round((doneCount / STAGES.length) * 100);
+
+  const navPills = STAGES.map(st => {
+    const d = stages[st.key] || {};
+    return `
+      <div class="stage-pill ${st.key===currentStageKey?'active':''} ${d.done?'done':''}" onclick="App.selectStage('${st.key}')">
+        <div class="num" style="background:${st.color}">${st.num}</div>
+        <div>
+          <div class="name">${escapeHtml(st.short)}</div>
+          <div class="status">${d.done ? '✓ Generated' : (st.optional ? 'Optional' : 'Pending')}</div>
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <button class="back-btn" onclick="App.backToList()">← All Shipments</button>
+    <div class="detail-head">
+      <div>
+        <div class="ref">${escapeHtml(s.ref)}</div>
+        <div class="cust">${escapeHtml(s.customer||'')}</div>
+      </div>
+      <div class="detail-progress">
+        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <div class="progress-label">${doneCount}/${STAGES.length} documents generated</div>
+      </div>
+    </div>
+    <div class="stage-nav">${navPills}</div>
+    <div id="pageCard">${renderStagePage(s, currentStageKey)}</div>`;
+}
+
+function renderStagePage(s, stageKey){
+  const stage = STAGES.find(x => x.key === stageKey);
+  const header = s.header || {};
+  const savedDoc = (s.documents && s.documents[stageKey]) || {};
+  modalItemRows = (savedDoc.items && savedDoc.items.length ? savedDoc.items : s.items) || [emptyItem()];
+  modalItemRows = modalItemRows.map(it => ({...it}));
+
+  const headerFieldsHtml = HEADER_FIELDS.map(f => `
+    <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
+  const extraFieldsHtml = stage.extraFields.map(f => `
+    <div class="field"><label>${f.label}</label>${fieldInput(f, savedDoc[f.name])}</div>`).join("");
+  const itemsBlock = stage.hasItems ? `
+    <div class="section-title">Items</div>
+    <div id="itemsEditorWrap">${renderItemsEditor()}</div>` : "";
+
+  const stageIdx = STAGES.findIndex(x => x.key === stageKey);
+  const nextStage = STAGES[stageIdx+1];
+
+  return `
+    <div class="page-card">
+      <h2>${stage.num}. ${stage.label}</h2>
+      <div class="page-sub">${escapeHtml(s.ref)}${s.customer ? ' — ' + escapeHtml(s.customer) : ''}</div>
+
+      <div class="section-title">Shipment Details</div>
+      <div class="field-grid" id="headerFields">${headerFieldsHtml}</div>
+
+      ${stage.extraFields.length ? `
+      <div class="section-title">${escapeHtml(stage.short)} Details</div>
+      <div class="field-grid" id="extraFields">${extraFieldsHtml}</div>` : ""}
+
+      ${itemsBlock}
+
+      <div class="page-actions">
+        <div>${nextStage ? `<button class="btn-nextstage" onclick="App.saveStageData(false,'${nextStage.key}')">Save & Go to Next Document →</button>` : ''}</div>
+        <div class="save-group">
+          <button class="btn-save" onclick="App.saveStageData(false,null)">Save</button>
+          <button class="btn-print" onclick="App.saveStageData(true,null)">Save & Print</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function selectStage(stageKey){
+  currentStageKey = stageKey;
+  renderApp();
+}
+
+// ---------- field + items helpers ----------
+function fieldInput(f, value){
+  const val = value != null && value !== "" ? value : (f.default || "");
+  if(f.type === "select"){
+    const opts = f.options.map(o => `<option value="${escapeHtml(o)}" ${o===val?'selected':''}>${escapeHtml(o)}</option>`).join("");
+    return `<select data-field="${f.name}">${opts}</select>`;
+  }
+  if(f.type === "textarea"){
+    return `<textarea data-field="${f.name}">${escapeHtml(val)}</textarea>`;
+  }
+  return `<input type="${f.type}" data-field="${f.name}" value="${escapeHtml(val)}">`;
+}
+
+function renderItemsEditor(){
+  const rows = modalItemRows.map((it, i) => `
+    <tr>
+      <td><input data-item="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description"></td>
+      <td><input data-item="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code"></td>
+      <td><input data-item="qty" data-idx="${i}" value="${escapeHtml(it.qty)}" placeholder="Qty"></td>
+      <td><input data-item="unit" data-idx="${i}" value="${escapeHtml(it.unit)}" placeholder="Unit"></td>
+      <td><input data-item="unitPrice" data-idx="${i}" value="${escapeHtml(it.unitPrice)}" placeholder="Unit Price"></td>
+      <td><button class="rm" onclick="App.removeItemRow(${i})">✕</button></td>
+    </tr>`).join("");
+  return `
+    <table class="items-table">
+      <thead><tr><th>Description</th><th>HS Code</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th></th></tr></thead>
+      <tbody id="itemsTbody">${rows}</tbody>
+    </table>
+    <button type="button" class="add-item-btn" onclick="App.addItemRow()">+ Add Item</button>`;
+}
+function syncItemRowsFromDom(){
+  document.querySelectorAll('[data-item]').forEach(el => {
+    const idx = parseInt(el.dataset.idx,10);
+    const key = el.dataset.item;
+    if(modalItemRows[idx]) modalItemRows[idx][key] = el.value;
+  });
+}
+function addItemRow(){
+  syncItemRowsFromDom();
+  modalItemRows.push(emptyItem());
+  document.getElementById("itemsEditorWrap").innerHTML = renderItemsEditor();
+}
+function removeItemRow(i){
+  syncItemRowsFromDom();
+  modalItemRows.splice(i,1);
+  if(modalItemRows.length===0) modalItemRows.push(emptyItem());
+  document.getElementById("itemsEditorWrap").innerHTML = renderItemsEditor();
+}
+
+// ---------- Save ----------
+function saveStageData(shouldPrint, goToStageKey){
+  if(!currentShipId) return;
+  const s = shipments.find(x => x.id === currentShipId);
+  const stage = STAGES.find(x => x.key === currentStageKey);
+  if(!s || !stage) return;
+
+  syncItemRowsFromDom();
+
+  const headerData = {};
+  document.querySelectorAll('#headerFields [data-field]').forEach(el => headerData[el.dataset.field] = el.value);
+  const extraData = {};
+  if(document.getElementById("extraFields")){
+    document.querySelectorAll('#extraFields [data-field]').forEach(el => extraData[el.dataset.field] = el.value);
+  }
+
+  try{
+    const docData = { ...extraData, items: modalItemRows };
+    localUpdate(currentShipId, {
+      header: headerData,
+      items: modalItemRows,
+      [`documents.${currentStageKey}`]: docData,
+      [`stages.${currentStageKey}`]: { done:true, completedAt: new Date().toISOString() }
+    });
+    toast(shouldPrint ? "Saved — opening print view" : "Saved");
+    if(shouldPrint) printDocument(stage, headerData, docData, s.ref, s.customer);
+    if(goToStageKey){ currentStageKey = goToStageKey; }
+    refreshFromStorage();
+  }catch(err){
+    console.error(err);
+    toast("Error saving document: " + err.message, true);
+  }
+}
+
+// ---------- Print rendering ----------
+function printDocument(stage, header, docData, ref, customer){
+  const itemsRows = stage.hasItems ? (docData.items||[]).map(it => {
+    const qty = parseFloat(it.qty)||0, price = parseFloat(it.unitPrice)||0;
+    const total = (qty*price) ? (qty*price).toFixed(2) : "";
+    return `<tr>
+      <td>${escapeHtml(it.description)}</td>
+      <td>${escapeHtml(it.hsCode)}</td>
+      <td style="text-align:right">${escapeHtml(it.qty)} ${escapeHtml(it.unit)}</td>
+      <td style="text-align:right">${it.unitPrice ? (header.currency||'')+' '+escapeHtml(it.unitPrice) : ''}</td>
+      <td style="text-align:right">${total ? (header.currency||'')+' '+total : ''}</td>
+    </tr>`;
+  }).join("") : "";
+
+  const grandTotal = stage.hasItems ? (docData.items||[]).reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0) : 0;
+
+  const itemsTable = stage.hasItems ? `
+    <table class="doc-items">
+      <thead><tr><th>Description</th><th>HS Code</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
+      <tbody>${itemsRows}</tbody>
+      ${grandTotal ? `<tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Grand Total</td><td style="text-align:right;font-weight:700">${escapeHtml(header.currency||'')} ${grandTotal.toFixed(2)}</td></tr></tfoot>` : ""}
+    </table>` : "";
+
+  const extraRows = stage.extraFields.map(f => {
+    const v = docData[f.name];
+    if(!v) return "";
+    return `<div class="doc-field"><span>${f.label}</span><b>${escapeHtml(v)}</b></div>`;
+  }).join("");
+
+  const buyerName = docData.buyerOverride || customer || "";
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escapeHtml(stage.label)} - ${escapeHtml(ref)}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:30px;max-width:800px;margin:0 auto;}
+    .doc-header{display:flex;justify-content:space-between;border-bottom:3px solid #0d2b52;padding-bottom:14px;margin-bottom:20px;}
+    .doc-header h1{font-size:1.3rem;color:#0d2b52;margin:0;}
+    .doc-header .company{font-weight:700;font-size:1.05rem;}
+    .doc-header .addr{font-size:.8rem;color:#555;max-width:280px;}
+    .doc-meta{display:flex;justify-content:space-between;margin-bottom:18px;font-size:.85rem;}
+    .parties{display:flex;gap:24px;margin-bottom:18px;}
+    .party{flex:1;font-size:.85rem;}
+    .party h4{margin:0 0 4px;color:#0d2b52;font-size:.78rem;text-transform:uppercase;letter-spacing:.5px;}
+    .doc-fields{display:flex;flex-wrap:wrap;gap:10px 26px;margin-bottom:18px;}
+    .doc-field{font-size:.85rem;display:flex;gap:6px;}
+    .doc-field span{color:#666;}
+    table.doc-items{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:.85rem;}
+    table.doc-items th{background:#0d2b52;color:#fff;padding:8px;text-align:left;}
+    table.doc-items td{padding:7px 8px;border-bottom:1px solid #ddd;}
+    .signatures{display:flex;justify-content:space-between;margin-top:60px;}
+    .sig{width:200px;border-top:1px solid #333;padding-top:6px;font-size:.8rem;text-align:center;color:#555;}
+    @media print{ body{padding:10mm;} }
+  </style></head>
+  <body>
+    <div class="doc-header">
+      <div>
+        <div class="company">${escapeHtml(header.exporterEntity||'')}</div>
+        <div class="addr">${escapeHtml(header.exporterAddress||'')}</div>
+      </div>
+      <div><h1>${escapeHtml(stage.label)}</h1></div>
+    </div>
+    <div class="doc-meta">
+      <div><b>Ref:</b> ${escapeHtml(ref)}</div>
+      <div><b>Date:</b> ${escapeHtml(docData.invoiceDate||docData.contractDate||docData.blDate||docData.certDate||docData.loadingDate||docData.packingDate||'')}</div>
+    </div>
+    <div class="parties">
+      <div class="party"><h4>Buyer</h4>${escapeHtml(buyerName)}<br>${escapeHtml(header.buyerAddress||'')}</div>
+      <div class="party"><h4>Consignee</h4>${escapeHtml(header.consignee||buyerName)}</div>
+      <div class="party"><h4>Notify Party</h4>${escapeHtml(header.notifyParty||'')}</div>
+    </div>
+    <div class="doc-fields">
+      <div class="doc-field"><span>Port of Loading:</span><b>${escapeHtml(header.portOfLoading||'')}</b></div>
+      <div class="doc-field"><span>Port of Discharge:</span><b>${escapeHtml(header.portOfDischarge||'')}</b></div>
+      <div class="doc-field"><span>Final Destination:</span><b>${escapeHtml(header.finalDestination||'')}</b></div>
+      <div class="doc-field"><span>Incoterm:</span><b>${escapeHtml(header.incoterm||'')}</b></div>
+      <div class="doc-field"><span>Payment Terms:</span><b>${escapeHtml(header.paymentTerms||'')}</b></div>
+      ${extraRows}
+    </div>
+    ${itemsTable}
+    <div class="signatures">
+      <div class="sig">Prepared By</div>
+      <div class="sig">Authorized Signatory</div>
+    </div>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => w.print(), 400);
+}
+
+window.App = {
+  addShipment, deleteShipment, openShipment, backToList, selectStage,
+  saveStageData, addItemRow, removeItemRow, render: renderApp
+};
+refreshFromStorage();
+</script>
+</body>
+</html>
