@@ -355,6 +355,7 @@ let currentShipId = null;
 let currentStageKey = "s1";
 let currentProviderId = null;
 let currentConsigneeId = null;
+let quickFormOpen = null; // null | 'expense' | 'consignee' — inline forms on the shipment detail page
 let modalItemRows = [];
 
 function toast(msg, isError){
@@ -394,6 +395,7 @@ function renderApp(){
   const tabs = `
     <div class="top-tabs">
       <button class="top-tab ${(view==='list'||view==='detail')?'active':''}" onclick="App.showShipmentsTab()">📦 Shipments</button>
+      <button class="top-tab ${view==='masterLedger'?'active':''}" onclick="App.showLedgerTab()">📒 Ledger</button>
       <button class="top-tab ${(view==='expenses'||view==='ledger')?'active':''}" onclick="App.showExpensesTab()">💰 Expenses</button>
       <button class="top-tab ${(view==='consignees'||view==='consigneeLedger')?'active':''}" onclick="App.showConsigneesTab()">👥 Consignees</button>
     </div>`;
@@ -406,6 +408,9 @@ function renderApp(){
     if(!s){ view = "list"; renderApp(); return; }
     document.getElementById("headerSub").textContent = s.ref + (s.customer ? " — " + s.customer : "");
     app.innerHTML = banner + tabs + renderDetailView(s);
+  } else if(view === "masterLedger"){
+    document.getElementById("headerSub").textContent = "All expense and consignee transactions in one place";
+    app.innerHTML = banner + tabs + renderMasterLedgerView();
   } else if(view === "expenses"){
     document.getElementById("headerSub").textContent = "Service provider expense ledgers";
     app.innerHTML = banner + tabs + renderExpensesView();
@@ -425,10 +430,73 @@ function renderApp(){
   }
 }
 function showShipmentsTab(){ view = "list"; currentShipId = null; renderApp(); }
+function showLedgerTab(){ view = "masterLedger"; renderApp(); }
 function showExpensesTab(){ view = "expenses"; currentProviderId = null; renderApp(); }
 function showConsigneesTab(){ view = "consignees"; currentConsigneeId = null; renderApp(); }
 
 // ================= LIST VIEW =================
+// ================= MASTER LEDGER (all providers + all consignees at once) =================
+function renderMasterLedgerView(){
+  const filter = (document.getElementById("ledgerSearchBox")?.value || "").trim().toLowerCase();
+
+  const allExpenseTxns = listTxns().sort((a,b) => new Date(b.date) - new Date(a.date));
+  const allConsigneeTxns = listConsigneeTxns().sort((a,b) => new Date(b.date) - new Date(a.date));
+
+  const totalPayables = providers.reduce((sum,p) => sum + Math.max(providerBalance(p.id),0), 0);
+  const totalReceivables = consignees.reduce((sum,c) => sum + Math.max(consigneeBalance(c.id),0), 0);
+
+  const expenseRows = allExpenseTxns
+    .map(t => ({ ...t, providerName: (providers.find(p=>p.id===t.providerId)||{}).name || '—' }))
+    .filter(t => !filter || t.providerName.toLowerCase().includes(filter) || (t.shipmentRef||'').toLowerCase().includes(filter) || (t.description||'').toLowerCase().includes(filter))
+    .map(t => `
+      <tr>
+        <td>${escapeHtml(t.date||'')}</td>
+        <td>${escapeHtml(t.providerName)}</td>
+        <td>${escapeHtml(t.shipmentRef||'')}</td>
+        <td>${escapeHtml(t.description||'')}</td>
+        <td class="${t.type==='charge'?'amt-charge':'amt-payment'}">${t.type==='charge'?'Charge':'Payment'}: PKR ${Number(t.amount||0).toLocaleString()}</td>
+        <td><button class="del-btn" onclick="App.deleteTxn('${t.id}')">✕</button></td>
+      </tr>`).join("");
+
+  const consigneeRows = allConsigneeTxns
+    .map(t => ({ ...t, consigneeName: (consignees.find(c=>c.id===t.consigneeId)||{}).name || '—' }))
+    .filter(t => !filter || t.consigneeName.toLowerCase().includes(filter) || (t.shipmentRef||'').toLowerCase().includes(filter) || (t.description||'').toLowerCase().includes(filter))
+    .map(t => `
+      <tr>
+        <td>${escapeHtml(t.date||'')}</td>
+        <td>${escapeHtml(t.consigneeName)}</td>
+        <td>${escapeHtml(t.shipmentRef||'')}</td>
+        <td>${escapeHtml(t.description||'')}</td>
+        <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: PKR ${Number(t.amount||0).toLocaleString()}</td>
+        <td><button class="del-btn" onclick="App.deleteConsigneeTxn('${t.id}')">✕</button></td>
+      </tr>`).join("");
+
+  return `
+    <div class="ledger-summary">
+      <div class="stat"><div class="label">Total Payables Outstanding</div><div class="value" style="color:#c0392b">PKR ${totalPayables.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Total Receivables Outstanding</div><div class="value" style="color:#c0392b">PKR ${totalReceivables.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Net Position</div><div class="value" style="color:${(totalReceivables-totalPayables)>=0?'#3f8f4f':'#c0392b'}">PKR ${(totalReceivables-totalPayables).toLocaleString()}</div></div>
+    </div>
+
+    <div class="search">
+      <input id="ledgerSearchBox" type="text" placeholder="Filter by party, shipment ref, or description..." oninput="App.render()">
+    </div>
+
+    <div class="section-title">Expenses Ledger — Service Providers</div>
+    ${expenseRows ? `
+    <table class="ledger-table" style="margin-bottom:24px;">
+      <thead><tr><th>Date</th><th>Provider</th><th>Shipment</th><th>Description</th><th>Amount</th><th></th></tr></thead>
+      <tbody>${expenseRows}</tbody>
+    </table>` : `<div class="empty">No expense transactions yet.</div>`}
+
+    <div class="section-title">Receivables Ledger — Consignees</div>
+    ${consigneeRows ? `
+    <table class="ledger-table">
+      <thead><tr><th>Date</th><th>Consignee</th><th>Shipment</th><th>Description</th><th>Amount</th><th></th></tr></thead>
+      <tbody>${consigneeRows}</tbody>
+    </table>` : `<div class="empty">No consignee transactions yet.</div>`}`;
+}
+
 function renderListView(){
   const filter = (document.getElementById("searchBox")?.value || "").trim().toLowerCase();
   const filtered = shipments.filter(s =>
@@ -509,10 +577,11 @@ function openShipment(shipId){
   const stages = s?.stages || emptyStages();
   const firstIncomplete = STAGES.find(st => !stages[st.key]?.done);
   currentStageKey = firstIncomplete ? firstIncomplete.key : "s1";
+  quickFormOpen = null;
   view = "detail";
   renderApp();
 }
-function backToList(){ view = "list"; currentShipId = null; renderApp(); }
+function backToList(){ view = "list"; currentShipId = null; quickFormOpen = null; renderApp(); }
 
 // ================= EXPENSES: PROVIDER LIST =================
 function renderExpensesView(){
@@ -657,8 +726,6 @@ function deleteTxn(id){
   deleteTxnRecord(id);
   toast("Transaction deleted");
   refreshFromStorage();
-  view = "ledger";
-  renderApp();
 }
 
 // ================= CONSIGNEES: LIST =================
@@ -802,8 +869,6 @@ function deleteConsigneeTxn(id){
   deleteConsigneeTxnRecord(id);
   toast("Transaction deleted");
   refreshFromStorage();
-  view = "consigneeLedger";
-  renderApp();
 }
 
 // ================= DETAIL / WIZARD VIEW =================
@@ -837,7 +902,124 @@ function renderDetailView(s){
       </div>
     </div>
     <div class="stage-nav">${navPills}</div>
-    <div id="pageCard">${renderStagePage(s, currentStageKey)}</div>`;
+    <div id="pageCard">${renderStagePage(s, currentStageKey)}</div>
+    <div id="financialsCard">${renderShipmentFinancials(s)}</div>`;
+}
+
+function renderShipmentFinancials(s){
+  const expenseTxns = listTxns().filter(t => t.shipmentRef === s.ref);
+  const consigneeTxns = listConsigneeTxns().filter(t => t.shipmentRef === s.ref);
+
+  const totalCharges = expenseTxns.filter(t=>t.type==="charge").reduce((sum,t)=>sum+Number(t.amount||0),0);
+  const totalPaidOut = expenseTxns.filter(t=>t.type==="payment").reduce((sum,t)=>sum+Number(t.amount||0),0);
+  const totalInvoiced = consigneeTxns.filter(t=>t.type==="invoice").reduce((sum,t)=>sum+Number(t.amount||0),0);
+  const totalReceived = consigneeTxns.filter(t=>t.type==="receipt").reduce((sum,t)=>sum+Number(t.amount||0),0);
+
+  const expenseRows = expenseTxns.map(t => {
+    const prov = providers.find(p => p.id === t.providerId);
+    return `<tr><td>${escapeHtml(t.date||'')}</td><td>${escapeHtml(prov ? prov.name : '—')}</td><td>${escapeHtml(t.description||'')}</td>
+      <td class="${t.type==='charge'?'amt-charge':'amt-payment'}">${t.type==='charge'?'Charge':'Payment'}: PKR ${Number(t.amount||0).toLocaleString()}</td></tr>`;
+  }).join("");
+  const consigneeRows = consigneeTxns.map(t => {
+    const cons = consignees.find(c => c.id === t.consigneeId);
+    return `<tr><td>${escapeHtml(t.date||'')}</td><td>${escapeHtml(cons ? cons.name : '—')}</td><td>${escapeHtml(t.description||'')}</td>
+      <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: PKR ${Number(t.amount||0).toLocaleString()}</td></tr>`;
+  }).join("");
+
+  const providerOptions = providers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  const consigneeOptions = consignees.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+
+  const expenseForm = quickFormOpen === 'expense' ? `
+    <div class="txn-form">
+      <h3>Add Expense for ${escapeHtml(s.ref)}</h3>
+      ${providers.length===0 ? `<div class="empty">No service providers yet — add one on the Expenses tab first.</div>` : `
+      <div class="field-grid">
+        <div class="field"><label>Provider</label><select id="qeProvider">${providerOptions}</select></div>
+        <div class="field"><label>Type</label><select id="qeType"><option value="charge">Charge</option><option value="payment">Payment</option></select></div>
+        <div class="field"><label>Date</label><input id="qeDate" type="date"></div>
+        <div class="field"><label>Amount (PKR)</label><input id="qeAmount" type="text" inputmode="numeric" pattern="[0-9]*"></div>
+        <div class="field" style="grid-column:1/-1"><label>Description</label><input id="qeDesc" type="text" placeholder="e.g. Customs clearance charges"></div>
+      </div>
+      <div class="page-actions" style="border-top:none;margin-top:12px;padding-top:0;">
+        <div></div>
+        <div class="save-group">
+          <button class="btn-cancel" onclick="App.closeQuickForms()">Cancel</button>
+          <button class="btn-nextstage" onclick="App.quickAddExpenseSubmit('${escapeHtml(s.ref)}')">Add</button>
+        </div>
+      </div>`}
+    </div>` : "";
+
+  const consigneeForm = quickFormOpen === 'consignee' ? `
+    <div class="txn-form">
+      <h3>Add Consignee Entry for ${escapeHtml(s.ref)}</h3>
+      ${consignees.length===0 ? `<div class="empty">No consignees yet — add one on the Consignees tab first.</div>` : `
+      <div class="field-grid">
+        <div class="field"><label>Consignee</label><select id="qcConsignee">${consigneeOptions}</select></div>
+        <div class="field"><label>Type</label><select id="qcType"><option value="invoice">Invoice</option><option value="receipt">Receipt</option></select></div>
+        <div class="field"><label>Date</label><input id="qcDate" type="date"></div>
+        <div class="field"><label>Amount (PKR)</label><input id="qcAmount" type="text" inputmode="numeric" pattern="[0-9]*"></div>
+        <div class="field" style="grid-column:1/-1"><label>Description</label><input id="qcDesc" type="text" placeholder="e.g. Commercial invoice, T/T received"></div>
+      </div>
+      <div class="page-actions" style="border-top:none;margin-top:12px;padding-top:0;">
+        <div></div>
+        <div class="save-group">
+          <button class="btn-cancel" onclick="App.closeQuickForms()">Cancel</button>
+          <button class="btn-nextstage" onclick="App.quickAddConsigneeSubmit('${escapeHtml(s.ref)}')">Add</button>
+        </div>
+      </div>`}
+    </div>` : "";
+
+  return `
+    <div class="section-title">Shipment Financials</div>
+    <div class="ledger-summary">
+      <div class="stat"><div class="label">Expenses Charged</div><div class="value">PKR ${totalCharges.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Expenses Paid</div><div class="value">PKR ${totalPaidOut.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Invoiced to Consignee</div><div class="value">PKR ${totalInvoiced.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Received from Consignee</div><div class="value">PKR ${totalReceived.toLocaleString()}</div></div>
+    </div>
+
+    ${(expenseTxns.length || consigneeTxns.length) ? `
+    <table class="ledger-table" style="margin-bottom:14px;">
+      <thead><tr><th>Date</th><th>Party</th><th>Description</th><th>Amount</th></tr></thead>
+      <tbody>${expenseRows}${consigneeRows}</tbody>
+    </table>` : `<div class="empty">No expenses or consignee entries linked to this shipment yet.</div>`}
+
+    <div style="display:flex;gap:10px;margin-bottom:6px;">
+      <button class="btn-nextstage" onclick="App.openQuickExpenseForm()">+ Add Expense</button>
+      <button class="btn-nextstage" onclick="App.openQuickConsigneeForm()">+ Add Consignee Entry</button>
+    </div>
+    ${expenseForm}${consigneeForm}`;
+}
+
+function openQuickExpenseForm(){ quickFormOpen = 'expense'; renderApp(); }
+function openQuickConsigneeForm(){ quickFormOpen = 'consignee'; renderApp(); }
+function closeQuickForms(){ quickFormOpen = null; renderApp(); }
+
+function quickAddExpenseSubmit(ref){
+  const providerId = document.getElementById("qeProvider").value;
+  const type = document.getElementById("qeType").value;
+  const date = document.getElementById("qeDate").value;
+  const amount = document.getElementById("qeAmount").value;
+  const description = document.getElementById("qeDesc").value.trim();
+  if(!amount || isNaN(Number(amount)) || Number(amount) <= 0){ toast("Enter a valid amount", true); return; }
+  if(!description){ toast("Enter a description", true); return; }
+  addTxnRecord({ providerId, type, date: date || new Date().toISOString().slice(0,10), amount: Number(amount), shipmentRef: ref, description });
+  toast("Expense added");
+  quickFormOpen = null;
+  refreshFromStorage();
+}
+function quickAddConsigneeSubmit(ref){
+  const consigneeId = document.getElementById("qcConsignee").value;
+  const type = document.getElementById("qcType").value;
+  const date = document.getElementById("qcDate").value;
+  const amount = document.getElementById("qcAmount").value;
+  const description = document.getElementById("qcDesc").value.trim();
+  if(!amount || isNaN(Number(amount)) || Number(amount) <= 0){ toast("Enter a valid amount", true); return; }
+  if(!description){ toast("Enter a description", true); return; }
+  addConsigneeTxnRecord({ consigneeId, type, date: date || new Date().toISOString().slice(0,10), amount: Number(amount), shipmentRef: ref, description });
+  toast("Consignee entry added");
+  quickFormOpen = null;
+  refreshFromStorage();
 }
 
 function renderStagePage(s, stageKey){
@@ -1063,9 +1245,10 @@ function printDocument(stage, header, docData, ref, customer){
 window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
   saveStageData, addItemRow, removeItemRow, render: renderApp,
-  showShipmentsTab, showExpensesTab, showConsigneesTab,
+  showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab,
   addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
-  addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn
+  addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn,
+  openQuickExpenseForm, openQuickConsigneeForm, closeQuickForms, quickAddExpenseSubmit, quickAddConsigneeSubmit
 };
 refreshFromStorage();
 </script>
