@@ -270,20 +270,16 @@ const STAGES = [
       {name:"accountNo",label:"Account No / IBAN",type:"text"},
       {name:"swiftCode",label:"SWIFT Code",type:"text"},
     ]},
-  { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:true,
+  { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:false, fileUpload:true,
     extraFields:[
       {name:"loadingDate",label:"Loading Date",type:"date"},
-      {name:"truckNo",label:"Truck No",type:"text"},
-      {name:"driverName",label:"Driver Name",type:"text"},
-      {name:"warehouseLocation",label:"Warehouse / Location",type:"text"},
+      {name:"notes",label:"Notes (optional)",type:"text"},
     ]},
-  { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:true,
+  { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:false, packingItems:true,
     extraFields:[
       {name:"packingDate",label:"Packing Date",type:"date"},
-      {name:"totalCartons",label:"Total Cartons",type:"text"},
-      {name:"grossWeight",label:"Gross Weight (kg)",type:"text"},
-      {name:"netWeight",label:"Net Weight (kg)",type:"text"},
-      {name:"measurementCBM",label:"Measurement (CBM)",type:"text"},
+      {name:"containerNo",label:"Container Number",type:"text"},
+      {name:"containerType",label:"Container Type",type:"select",options:["1 X 20 FT CONTAINER","1 X 20 HQ CONTAINER","1 X 40 FT CONTAINER","1 X 40 HQ CONTAINER","LCL"]},
     ]},
   { key:"s4", num:4, label:"Commercial Invoice (Customer) - Optional", short:"Comm. Invoice (Customer)", color:"var(--amber)", optional:true, hasItems:true,
     extraFields:[
@@ -357,6 +353,8 @@ let currentProviderId = null;
 let currentConsigneeId = null;
 let quickFormOpen = null; // null | 'expense' | 'consignee' — inline forms on the shipment detail page
 let modalItemRows = [];
+let packingItemRows = [];
+let pendingUploadFile = null; // { name, dataUrl } waiting to be saved with the stage
 
 function toast(msg, isError){
   const el = document.getElementById("statusMsg");
@@ -379,7 +377,16 @@ function emptyStages(){
   STAGES.forEach(s => obj[s.key] = { done:false, completedAt:null });
   return obj;
 }
+// UAE shipments route via Saif Al Sahra (own company clears + redistributes) => all 11 stages.
+// Direct exports to other countries skip the Saif Al Sahra invoices (s10, s11) => 9 stages.
+function stagesForShipment(s){
+  if(s && s.routing === "direct"){
+    return STAGES.filter(st => st.key !== "s10" && st.key !== "s11");
+  }
+  return STAGES;
+}
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
+function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", cbmPerCarton:"" }; }
 
 function refreshFromStorage(){
   shipments = localList();
@@ -506,19 +513,23 @@ function renderListView(){
   const cards = filtered.length === 0
     ? `<div class="empty">No shipments yet. Add one above to get started.</div>`
     : filtered.map(s => {
+        const applicable = stagesForShipment(s);
         const stages = s.stages || emptyStages();
-        const doneCount = STAGES.filter(st => stages[st.key]?.done).length;
-        const pct = Math.round((doneCount / STAGES.length) * 100);
+        const doneCount = applicable.filter(st => stages[st.key]?.done).length;
+        const pct = Math.round((doneCount / applicable.length) * 100);
+        const routeBadge = s.routing === "direct"
+          ? `<span style="font-size:.7rem;background:#eef2f7;color:#6b7280;padding:2px 8px;border-radius:10px;margin-left:8px;">Direct Export</span>`
+          : `<span style="font-size:.7rem;background:#e6f4ea;color:#3f8f4f;padding:2px 8px;border-radius:10px;margin-left:8px;">Via Saif Al Sahra (UAE)</span>`;
         return `
         <div class="shipment-card" onclick="App.openShipment('${s.id}')">
           <div>
-            <div class="ref">${escapeHtml(s.ref || '(no ref)')}</div>
+            <div class="ref">${escapeHtml(s.ref || '(no ref)')}${routeBadge}</div>
             <div class="cust">${escapeHtml(s.customer || '')}</div>
           </div>
           <div class="right">
             <div class="progress-wrap">
               <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-              <div class="progress-label">${doneCount}/${STAGES.length} documents</div>
+              <div class="progress-label">${doneCount}/${applicable.length} documents</div>
             </div>
             <button class="del-btn" onclick="event.stopPropagation(); App.deleteShipment('${s.id}','${escapeHtml(s.ref||'')}')">✕</button>
           </div>
@@ -531,6 +542,10 @@ function renderListView(){
       <div class="add-row">
         <input id="newRef" type="text" placeholder="Shipment / Invoice Ref (e.g. EXP-2026-014)">
         <input id="newCustomer" type="text" placeholder="Buyer / Customer Name">
+        <select id="newRouting" style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">
+          <option value="uae">Via Saif Al Sahra (UAE) — 11 documents</option>
+          <option value="direct">Direct Export (other country) — 9 documents</option>
+        </select>
         <button id="addBtn" onclick="App.addShipment()">Add Shipment</button>
       </div>
     </div>
@@ -543,14 +558,20 @@ function renderListView(){
 function addShipment(){
   const refEl = document.getElementById("newRef");
   const custEl = document.getElementById("newCustomer");
+  const routingEl = document.getElementById("newRouting");
   const ref = refEl.value.trim();
   const customer = custEl.value.trim();
   if(!ref){ toast("Enter a shipment reference", true); return; }
   try{
     const header = {};
     HEADER_FIELDS.forEach(f => header[f.name] = f.default || "");
+    if(routingEl.value === "uae"){
+      header.finalDestination = header.finalDestination || "UAE";
+      header.consignee = header.consignee || "Saif Al Sahra";
+    }
     localAdd({
       ref, customer, header,
+      routing: routingEl.value,
       items: [emptyItem()],
       stages: emptyStages(),
       documents: {}
@@ -574,9 +595,10 @@ function deleteShipment(shipId, ref){
 function openShipment(shipId){
   currentShipId = shipId;
   const s = shipments.find(x => x.id === shipId);
+  const applicable = stagesForShipment(s);
   const stages = s?.stages || emptyStages();
-  const firstIncomplete = STAGES.find(st => !stages[st.key]?.done);
-  currentStageKey = firstIncomplete ? firstIncomplete.key : "s1";
+  const firstIncomplete = applicable.find(st => !stages[st.key]?.done);
+  currentStageKey = firstIncomplete ? firstIncomplete.key : applicable[0].key;
   quickFormOpen = null;
   view = "detail";
   renderApp();
@@ -873,11 +895,15 @@ function deleteConsigneeTxn(id){
 
 // ================= DETAIL / WIZARD VIEW =================
 function renderDetailView(s){
+  const applicable = stagesForShipment(s);
   const stages = s.stages || emptyStages();
-  const doneCount = STAGES.filter(st => stages[st.key]?.done).length;
-  const pct = Math.round((doneCount / STAGES.length) * 100);
+  const doneCount = applicable.filter(st => stages[st.key]?.done).length;
+  const pct = Math.round((doneCount / applicable.length) * 100);
+  const routeBadge = s.routing === "direct"
+    ? `<span style="font-size:.72rem;background:#eef2f7;color:#6b7280;padding:3px 10px;border-radius:10px;vertical-align:middle;margin-left:8px;">Direct Export</span>`
+    : `<span style="font-size:.72rem;background:#e6f4ea;color:#3f8f4f;padding:3px 10px;border-radius:10px;vertical-align:middle;margin-left:8px;">Via Saif Al Sahra (UAE)</span>`;
 
-  const navPills = STAGES.map(st => {
+  const navPills = applicable.map(st => {
     const d = stages[st.key] || {};
     return `
       <div class="stage-pill ${st.key===currentStageKey?'active':''} ${d.done?'done':''}" onclick="App.selectStage('${st.key}')">
@@ -893,12 +919,12 @@ function renderDetailView(s){
     <button class="back-btn" onclick="App.backToList()">← All Shipments</button>
     <div class="detail-head">
       <div>
-        <div class="ref">${escapeHtml(s.ref)}</div>
+        <div class="ref">${escapeHtml(s.ref)}${routeBadge}</div>
         <div class="cust">${escapeHtml(s.customer||'')}</div>
       </div>
       <div class="detail-progress">
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-        <div class="progress-label">${doneCount}/${STAGES.length} documents generated</div>
+        <div class="progress-label">${doneCount}/${applicable.length} documents generated</div>
       </div>
     </div>
     <div class="stage-nav">${navPills}</div>
@@ -1028,17 +1054,40 @@ function renderStagePage(s, stageKey){
   const savedDoc = (s.documents && s.documents[stageKey]) || {};
   modalItemRows = (savedDoc.items && savedDoc.items.length ? savedDoc.items : s.items) || [emptyItem()];
   modalItemRows = modalItemRows.map(it => ({...it}));
+  packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems || [emptyPackingItem()]));
+  packingItemRows = packingItemRows.map(it => ({...it}));
+  pendingUploadFile = null;
 
   const headerFieldsHtml = HEADER_FIELDS.map(f => `
     <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
   const extraFieldsHtml = stage.extraFields.map(f => `
     <div class="field"><label>${f.label}</label>${fieldInput(f, savedDoc[f.name])}</div>`).join("");
-  const itemsBlock = stage.hasItems ? `
-    <div class="section-title">Items</div>
-    <div id="itemsEditorWrap">${renderItemsEditor()}</div>` : "";
 
-  const stageIdx = STAGES.findIndex(x => x.key === stageKey);
-  const nextStage = STAGES[stageIdx+1];
+  let itemsBlock = "";
+  if(stage.hasItems){
+    itemsBlock = `
+    <div class="section-title">Items</div>
+    <div id="itemsEditorWrap">${renderItemsEditor()}</div>`;
+  } else if(stage.packingItems){
+    itemsBlock = `
+    <div class="section-title">Packing Items</div>
+    <div id="packingEditorWrap">${renderPackingItemsEditor()}</div>`;
+  } else if(stage.fileUpload){
+    const existing = savedDoc.fileName ? `
+      <div style="margin-bottom:10px;font-size:.86rem;">
+        📎 Uploaded: <b>${escapeHtml(savedDoc.fileName)}</b>
+        <button class="btn-save" style="margin-left:10px;padding:5px 12px;" onclick="App.downloadStageFile('${stageKey}')">Download</button>
+      </div>` : `<div style="margin-bottom:10px;font-size:.84rem;color:var(--muted);">No file uploaded yet.</div>`;
+    itemsBlock = `
+    <div class="section-title">Loading Sheet File (Excel)</div>
+    ${existing}
+    <input type="file" id="stageFileInput" accept=".xlsx,.xls,.csv" onchange="App.stageFileSelected(this)" style="font-size:.85rem;">
+    <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">Upload the loading sheet prepared in Excel. It will be stored with this shipment.</div>`;
+  }
+
+  const applicable = stagesForShipment(s);
+  const stageIdx = applicable.findIndex(x => x.key === stageKey);
+  const nextStage = applicable[stageIdx+1];
 
   return `
     <div class="page-card">
@@ -1058,7 +1107,7 @@ function renderStagePage(s, stageKey){
         <div>${nextStage ? `<button class="btn-nextstage" onclick="App.saveStageData(false,'${nextStage.key}')">Save & Go to Next Document →</button>` : ''}</div>
         <div class="save-group">
           <button class="btn-save" onclick="App.saveStageData(false,null)">Save</button>
-          <button class="btn-print" onclick="App.saveStageData(true,null)">Save & Print</button>
+          ${stage.fileUpload ? '' : `<button class="btn-print" onclick="App.saveStageData(true,null)">Save & Print</button>`}
         </div>
       </div>
     </div>`;
@@ -1118,6 +1167,125 @@ function removeItemRow(i){
   document.getElementById("itemsEditorWrap").innerHTML = renderItemsEditor();
 }
 
+// ---------- Packing list items (Babji Manufacturing format) ----------
+function renderPackingItemsEditor(){
+  const rows = packingItemRows.map((it, i) => {
+    const unitPacked = parseFloat(it.unitPacked)||0;
+    const totalPacked = parseFloat(it.totalPacked)||0;
+    const cbmPer = parseFloat(it.cbmPerCarton)||0;
+    const totalUOM = unitPacked * totalPacked;
+    const totalCBM = cbmPer * totalPacked;
+    return `
+    <tr>
+      <td><input data-pitem="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code" style="width:90px;"></td>
+      <td><input data-pitem="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description"></td>
+      <td><input data-pitem="uom" data-idx="${i}" value="${escapeHtml(it.uom)}" placeholder="UOM" style="width:55px;"></td>
+      <td><input data-pitem="unitPacked" data-idx="${i}" value="${escapeHtml(it.unitPacked)}" placeholder="Unit Packed" style="width:80px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="packingType" data-idx="${i}" value="${escapeHtml(it.packingType)}" placeholder="Packing" style="width:75px;"></td>
+      <td><input data-pitem="totalPacked" data-idx="${i}" value="${escapeHtml(it.totalPacked)}" placeholder="Cartons" style="width:75px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="cbmPerCarton" data-idx="${i}" value="${escapeHtml(it.cbmPerCarton)}" placeholder="CBM/Ctn" style="width:75px;" oninput="App.packingRecalc()"></td>
+      <td style="font-size:.8rem;text-align:right;white-space:nowrap;" data-calc-uom="${i}">${totalUOM ? totalUOM.toLocaleString() : ''}</td>
+      <td style="font-size:.8rem;text-align:right;white-space:nowrap;" data-calc-cbm="${i}">${totalCBM ? totalCBM.toFixed(2) : ''}</td>
+      <td><button class="rm" onclick="App.removePackingItemRow(${i})">✕</button></td>
+    </tr>`;
+  }).join("");
+
+  const totals = packingTotals();
+
+  return `
+    <table class="items-table">
+      <thead><tr><th>HS Code</th><th>Item Description</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Qty (Packed)</th><th>CBM / Carton</th><th>Total Qty (UOM)</th><th>Total CBM</th><th></th></tr></thead>
+      <tbody id="packingTbody">${rows}</tbody>
+      <tfoot><tr style="font-weight:700;background:#f1f4f8;">
+        <td colspan="5" style="text-align:right;padding:7px 8px;">Totals</td>
+        <td style="padding:7px 8px;" id="packingTotalPacked">${totals.packed.toLocaleString()}</td>
+        <td></td>
+        <td style="text-align:right;padding:7px 8px;" id="packingTotalUOM">${totals.uom.toLocaleString()}</td>
+        <td style="text-align:right;padding:7px 8px;" id="packingTotalCBM">${totals.cbm.toFixed(2)}</td>
+        <td></td>
+      </tr></tfoot>
+    </table>
+    <button type="button" class="add-item-btn" onclick="App.addPackingItemRow()">+ Add Item</button>`;
+}
+function packingTotals(){
+  let packed=0, uom=0, cbm=0;
+  packingItemRows.forEach(it => {
+    const up = parseFloat(it.unitPacked)||0;
+    const tp = parseFloat(it.totalPacked)||0;
+    const cp = parseFloat(it.cbmPerCarton)||0;
+    packed += tp;
+    uom += up*tp;
+    cbm += cp*tp;
+  });
+  return { packed, uom, cbm };
+}
+function syncPackingRowsFromDom(){
+  document.querySelectorAll('[data-pitem]').forEach(el => {
+    const idx = parseInt(el.dataset.idx,10);
+    const key = el.dataset.pitem;
+    if(packingItemRows[idx]) packingItemRows[idx][key] = el.value;
+  });
+}
+function packingRecalc(){
+  syncPackingRowsFromDom();
+  packingItemRows.forEach((it, i) => {
+    const up = parseFloat(it.unitPacked)||0;
+    const tp = parseFloat(it.totalPacked)||0;
+    const cp = parseFloat(it.cbmPerCarton)||0;
+    const uomEl = document.querySelector(`[data-calc-uom="${i}"]`);
+    const cbmEl = document.querySelector(`[data-calc-cbm="${i}"]`);
+    if(uomEl) uomEl.textContent = (up*tp) ? (up*tp).toLocaleString() : '';
+    if(cbmEl) cbmEl.textContent = (cp*tp) ? (cp*tp).toFixed(2) : '';
+  });
+  const totals = packingTotals();
+  const tp = document.getElementById("packingTotalPacked");
+  const tu = document.getElementById("packingTotalUOM");
+  const tc = document.getElementById("packingTotalCBM");
+  if(tp) tp.textContent = totals.packed.toLocaleString();
+  if(tu) tu.textContent = totals.uom.toLocaleString();
+  if(tc) tc.textContent = totals.cbm.toFixed(2);
+}
+function addPackingItemRow(){
+  syncPackingRowsFromDom();
+  packingItemRows.push(emptyPackingItem());
+  document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
+}
+function removePackingItemRow(i){
+  syncPackingRowsFromDom();
+  packingItemRows.splice(i,1);
+  if(packingItemRows.length===0) packingItemRows.push(emptyPackingItem());
+  document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
+}
+
+// ---------- Loading sheet file upload ----------
+function stageFileSelected(inputEl){
+  const file = inputEl.files && inputEl.files[0];
+  if(!file) return;
+  if(file.size > 3 * 1024 * 1024){
+    toast("File too large for local storage (max ~3 MB). Compress or simplify the sheet.", true);
+    inputEl.value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    pendingUploadFile = { name: file.name, dataUrl: reader.result };
+    toast("File ready — click Save to store it");
+  };
+  reader.onerror = () => toast("Could not read file", true);
+  reader.readAsDataURL(file);
+}
+function downloadStageFile(stageKey){
+  const s = shipments.find(x => x.id === currentShipId);
+  const savedDoc = s && s.documents && s.documents[stageKey];
+  if(!savedDoc || !savedDoc.fileDataUrl){ toast("No file stored", true); return; }
+  const a = document.createElement("a");
+  a.href = savedDoc.fileDataUrl;
+  a.download = savedDoc.fileName || "loading-sheet.xlsx";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 // ---------- Save ----------
 function saveStageData(shouldPrint, goToStageKey){
   if(!currentShipId) return;
@@ -1126,6 +1294,7 @@ function saveStageData(shouldPrint, goToStageKey){
   if(!s || !stage) return;
 
   syncItemRowsFromDom();
+  if(stage.packingItems) syncPackingRowsFromDom();
 
   const headerData = {};
   document.querySelectorAll('#headerFields [data-field]').forEach(el => headerData[el.dataset.field] = el.value);
@@ -1135,25 +1304,53 @@ function saveStageData(shouldPrint, goToStageKey){
   }
 
   try{
-    const docData = { ...extraData, items: modalItemRows };
-    localUpdate(currentShipId, {
-      header: headerData,
-      items: modalItemRows,
-      [`documents.${currentStageKey}`]: docData,
-      [`stages.${currentStageKey}`]: { done:true, completedAt: new Date().toISOString() }
-    });
+    const docData = { ...extraData };
+    const updates = { header: headerData };
+
+    if(stage.packingItems){
+      docData.packingItems = packingItemRows;
+      updates.packingItems = packingItemRows; // shared at shipment level so it can pre-fill next time
+    } else if(stage.fileUpload){
+      const prevDoc = (s.documents && s.documents[currentStageKey]) || {};
+      if(pendingUploadFile){
+        docData.fileName = pendingUploadFile.name;
+        docData.fileDataUrl = pendingUploadFile.dataUrl;
+      } else if(prevDoc.fileName){
+        docData.fileName = prevDoc.fileName;
+        docData.fileDataUrl = prevDoc.fileDataUrl;
+      } else {
+        toast("Upload the Excel loading sheet before saving", true);
+        return;
+      }
+    } else {
+      docData.items = modalItemRows;
+      updates.items = modalItemRows;
+    }
+
+    updates[`documents.${currentStageKey}`] = docData;
+    updates[`stages.${currentStageKey}`] = { done:true, completedAt: new Date().toISOString() };
+    localUpdate(currentShipId, updates);
+    pendingUploadFile = null;
     toast(shouldPrint ? "Saved — opening print view" : "Saved");
     if(shouldPrint) printDocument(stage, headerData, docData, s.ref, s.customer);
     if(goToStageKey){ currentStageKey = goToStageKey; }
     refreshFromStorage();
   }catch(err){
     console.error(err);
-    toast("Error saving document: " + err.message, true);
+    if(String(err.name).includes("QuotaExceeded") || String(err.message).toLowerCase().includes("quota")){
+      toast("Browser storage is full — the uploaded file may be too large. Try a smaller file.", true);
+    } else {
+      toast("Error saving document: " + err.message, true);
+    }
   }
 }
 
 // ---------- Print rendering ----------
 function printDocument(stage, header, docData, ref, customer){
+  if(stage.packingItems){
+    printPackingList(header, docData, ref, customer);
+    return;
+  }
   const itemsRows = stage.hasItems ? (docData.items||[]).map(it => {
     const qty = parseFloat(it.qty)||0, price = parseFloat(it.unitPrice)||0;
     const total = (qty*price) ? (qty*price).toFixed(2) : "";
@@ -1242,9 +1439,102 @@ function printDocument(stage, header, docData, ref, customer){
   setTimeout(() => w.print(), 400);
 }
 
+// Packing list print — matches Babji Manufacturing layout
+function printPackingList(header, docData, ref, customer){
+  const items = docData.packingItems || [];
+  let totPacked=0, totUOM=0, totCBM=0;
+  const rows = items.map((it, i) => {
+    const up = parseFloat(it.unitPacked)||0;
+    const tp = parseFloat(it.totalPacked)||0;
+    const cp = parseFloat(it.cbmPerCarton)||0;
+    const uom = up*tp, cbm = cp*tp;
+    totPacked += tp; totUOM += uom; totCBM += cbm;
+    return `<tr>
+      <td style="text-align:center">${i+1}</td>
+      <td style="text-align:center">${escapeHtml(it.hsCode)}</td>
+      <td>${escapeHtml(it.description)}</td>
+      <td style="text-align:center">${escapeHtml(it.uom)}</td>
+      <td style="text-align:center">${escapeHtml(it.unitPacked)}</td>
+      <td style="text-align:center">${escapeHtml(it.packingType)}</td>
+      <td style="text-align:center">${tp ? tp.toLocaleString() : ''}</td>
+      <td style="text-align:center">${uom ? uom.toLocaleString() : ''}</td>
+      <td style="text-align:center">${cp ? cp : ''}</td>
+      <td style="text-align:center">${cbm ? cbm.toFixed(2) : ''}</td>
+    </tr>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Packing List - ${escapeHtml(ref)}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:26px;max-width:860px;margin:0 auto;}
+    .company{text-align:center;}
+    .company h1{margin:0;font-size:1.5rem;letter-spacing:.5px;}
+    .company .addr{font-size:.72rem;font-weight:700;margin-top:4px;}
+    h2.doctitle{text-align:center;font-weight:400;font-size:1.25rem;margin:22px 0 18px;letter-spacing:1px;}
+    .meta{display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:16px;}
+    .meta .block div{margin-bottom:3px;}
+    .meta b{text-decoration:underline;}
+    table{width:100%;border-collapse:collapse;font-size:.78rem;}
+    th,td{border:1px solid #333;padding:6px 6px;}
+    th{background:#f5f5f5;text-align:center;}
+    tfoot td{font-weight:700;}
+    .sig{margin-top:70px;width:280px;}
+    .sig .line{border-top:1px solid #333;text-align:center;padding-top:5px;font-size:.8rem;}
+    @media print{ body{padding:8mm;} }
+  </style></head>
+  <body>
+    <div class="company">
+      <h1>${escapeHtml(header.exporterEntity||'BABJI MANUFACTURING').toUpperCase()}</h1>
+      <div class="addr">${escapeHtml(header.exporterAddress||'')}</div>
+    </div>
+    <h2 class="doctitle">PACKING LIST</h2>
+    <div class="meta">
+      <div class="block">
+        <div><b>To/Buyer:</b></div>
+        <div>${escapeHtml(docData.buyerOverride||customer||'')}</div>
+        <div><b>Address:</b></div>
+        <div>${escapeHtml(header.buyerAddress||'')}</div>
+      </div>
+      <div class="block">
+        <div><b>Loading Port:</b></div>
+        <div>${escapeHtml(header.portOfLoading||'')}</div>
+        <div><b>Destination Port:</b></div>
+        <div>${escapeHtml(header.portOfDischarge||'')}</div>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Sr.No</th><th>HS CODE</th><th>ITEM DESCRIPTION</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Quantity (Packed)</th><th>Total Quantity (UOM)</th><th>CBM per Carton</th><th>TOTAL CBM</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2" style="text-align:center">Container #<br>${escapeHtml(docData.containerNo||'')}</td>
+          <td colspan="4" style="text-align:center">Total ${escapeHtml(docData.containerType||'')}</td>
+          <td style="text-align:center">${totPacked.toLocaleString()}</td>
+          <td style="text-align:center">${totUOM.toLocaleString()}</td>
+          <td></td>
+          <td style="text-align:center">${totCBM.toFixed(2)}</td>
+        </tr>
+      </tfoot>
+    </table>
+    <div class="sig">
+      <div class="line">${escapeHtml(header.exporterEntity||'BABJI MANUFACTURING').toUpperCase()}</div>
+    </div>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => w.print(), 400);
+}
+
 window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
   saveStageData, addItemRow, removeItemRow, render: renderApp,
+  addPackingItemRow, removePackingItemRow, packingRecalc,
+  stageFileSelected, downloadStageFile,
   showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab,
   addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
   addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn,
