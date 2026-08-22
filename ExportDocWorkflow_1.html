@@ -127,6 +127,7 @@
 
 <div id="statusMsg" class="status-msg"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 /* =========================================================================
    STORAGE LAYER
@@ -235,12 +236,111 @@ function addConsigneeTxnRecord(data){
   return id;
 }
 function deleteConsigneeTxnRecord(id){ saveConsigneeTxns(listConsigneeTxns().filter(t => t.id !== id)); }
+
+// ---- Reusable settings (exporter addresses per entity, bank details) — saved once, pre-filled everywhere ----
+const SETTINGS_KEY = "exportDocWorkflow_settings_v1";
+function getSettings(){
+  try{ return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); }catch(e){ return {}; }
+}
+function saveSettings(obj){ localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj)); }
+function rememberReusables(headerData, extraData){
+  const st = getSettings();
+  st.exporterAddresses = st.exporterAddresses || {};
+  st.bank = st.bank || {};
+  st.lastHeader = st.lastHeader || {};
+  if(headerData.exporterEntity && headerData.exporterAddress){
+    st.exporterAddresses[headerData.exporterEntity] = headerData.exporterAddress;
+  }
+  // remember last-used values for fields that repeat across shipments (final destination intentionally NOT remembered)
+  ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading","consignee"].forEach(k => {
+    if(headerData[k]) st.lastHeader[k] = headerData[k];
+  });
+  ["bankBeneficiary","bankName","accountNo","swiftCode"].forEach(k => {
+    if(extraData[k]) st.bank[k] = extraData[k];
+  });
+  saveSettings(st);
+  // save buyer address back onto the consignee record so it's known next time
+  const s = shipments.find(x => x.id === currentShipId);
+  if(s && headerData.buyerAddress){
+    const cons = consignees.find(c => c.id === s.consigneeId)
+      || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
+    if(cons && !cons.address){
+      const arr = listConsignees();
+      const idx = arr.findIndex(c => c.id === cons.id);
+      if(idx >= 0){ arr[idx].address = headerData.buyerAddress; saveConsignees(arr); }
+    }
+  }
+}
+
+// ---- Item catalog: product master list, auto-learned from packing lists & invoices ----
+const CATALOG_KEY = "exportDocWorkflow_itemCatalog_v1";
+function listCatalog(){ try{ return JSON.parse(localStorage.getItem(CATALOG_KEY)||"[]"); }catch(e){ return []; } }
+function saveCatalog(arr){ localStorage.setItem(CATALOG_KEY, JSON.stringify(arr)); }
+function upsertCatalogItem(data){
+  if(!data.description) return;
+  const arr = listCatalog();
+  const idx = arr.findIndex(c => c.description.toLowerCase() === data.description.toLowerCase());
+  if(idx >= 0){
+    // update non-empty fields only
+    ["hsCode","uom","unitPacked","cbmPerCarton","unitPrice"].forEach(k => {
+      if(data[k]) arr[idx][k] = data[k];
+    });
+  } else {
+    arr.push({
+      id: "cat_" + Date.now() + "_" + Math.random().toString(36).slice(2,8),
+      description: data.description,
+      hsCode: data.hsCode || "96039000",
+      uom: data.uom || "Pcs",
+      unitPacked: data.unitPacked || "",
+      cbmPerCarton: data.cbmPerCarton || "",
+      unitPrice: data.unitPrice || ""
+    });
+  }
+  saveCatalog(arr);
+}
+function deleteCatalogItem(id){ saveCatalog(listCatalog().filter(c => c.id !== id)); }
+function findCatalogItem(description){
+  return listCatalog().find(c => c.description.toLowerCase() === String(description||"").toLowerCase());
+}
 function txnsForConsignee(consigneeId){
   return listConsigneeTxns().filter(t => t.consigneeId === consigneeId).sort((a,b) => new Date(a.date) - new Date(b.date));
 }
 // For consignees: 'invoice' = we billed them (increases what they owe us), 'receipt' = they paid us (decreases it)
 function consigneeBalance(consigneeId){
   return txnsForConsignee(consigneeId).reduce((bal,t) => bal + (t.type==="invoice" ? Number(t.amount||0) : -Number(t.amount||0)), 0);
+}
+// Currency-aware display helpers (transactions can be PKR, USD, AED...)
+function sumByCurrency(txns, type){
+  const map = {};
+  txns.filter(t => t.type === type).forEach(t => {
+    const cur = t.currency || "PKR";
+    map[cur] = (map[cur]||0) + Number(t.amount||0);
+  });
+  const parts = Object.entries(map).map(([cur,amt]) => cur + " " + amt.toLocaleString());
+  return parts.length ? parts.join(" · ") : "0";
+}
+function balanceByCurrency(txns){
+  const map = {};
+  txns.forEach(t => {
+    const cur = t.currency || "PKR";
+    map[cur] = (map[cur]||0) + (t.type==="invoice"||t.type==="charge" ? Number(t.amount||0) : -Number(t.amount||0));
+  });
+  const parts = Object.entries(map).filter(([,amt]) => amt !== 0).map(([cur,amt]) => cur + " " + amt.toLocaleString());
+  return parts.length ? parts.join(" · ") : "Settled";
+}
+function whatsappReminder(consigneeId){
+  const c = consignees.find(x => x.id === consigneeId);
+  if(!c) return;
+  let phone = String(c.contact||"").replace(/[^\d+]/g,"");
+  if(!phone){
+    phone = prompt("Enter WhatsApp number with country code (e.g. 9715xxxxxxxx):") || "";
+    phone = phone.replace(/[^\d+]/g,"");
+    if(!phone) return;
+  }
+  phone = phone.replace(/^\+/,"");
+  const bal = balanceByCurrency(txnsForConsignee(consigneeId));
+  const msg = `Assalam o Alaikum ${c.name},\n\nThis is a payment reminder from Royal Plastics & Household.\nOutstanding balance: ${bal}\n\nPlease arrange payment at your earliest convenience. JazakAllah.`;
+  window.open("https://wa.me/" + phone + "?text=" + encodeURIComponent(msg), "_blank");
 }
 
 const EXPORTERS = ["Royal Plastics & Household", "Babji Traders", "Babji Manufacturing"];
@@ -271,10 +371,7 @@ const STAGES = [
       {name:"swiftCode",label:"SWIFT Code",type:"text"},
     ]},
   { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:false, fileUpload:true,
-    extraFields:[
-      {name:"loadingDate",label:"Loading Date",type:"date"},
-      {name:"notes",label:"Notes (optional)",type:"text"},
-    ]},
+    extraFields:[]},
   { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:false, packingItems:true,
     extraFields:[
       {name:"packingDate",label:"Packing Date",type:"date"},
@@ -405,6 +502,8 @@ function renderApp(){
       <button class="top-tab ${view==='masterLedger'?'active':''}" onclick="App.showLedgerTab()">📒 Ledger</button>
       <button class="top-tab ${(view==='expenses'||view==='ledger')?'active':''}" onclick="App.showExpensesTab()">💰 Expenses</button>
       <button class="top-tab ${(view==='consignees'||view==='consigneeLedger')?'active':''}" onclick="App.showConsigneesTab()">👥 Consignees</button>
+      <button class="top-tab ${view==='catalog'?'active':''}" onclick="App.showCatalogTab()">🏷️ Items</button>
+      <button class="top-tab ${view==='data'?'active':''}" onclick="App.showDataTab()">🛠️ Data</button>
     </div>`;
 
   if(view === "list"){
@@ -434,10 +533,18 @@ function renderApp(){
     if(!c){ view = "consignees"; renderApp(); return; }
     document.getElementById("headerSub").textContent = c.name + " — ledger";
     app.innerHTML = banner + tabs + renderConsigneeLedgerView(c);
+  } else if(view === "catalog"){
+    document.getElementById("headerSub").textContent = "Product master list — auto-fills packing lists and invoices";
+    app.innerHTML = banner + tabs + renderCatalogView();
+  } else if(view === "data"){
+    document.getElementById("headerSub").textContent = "Import old Excel records · backup & restore";
+    app.innerHTML = banner + tabs + renderDataView();
   }
 }
 function showShipmentsTab(){ view = "list"; currentShipId = null; renderApp(); }
 function showLedgerTab(){ view = "masterLedger"; renderApp(); }
+function showCatalogTab(){ view = "catalog"; renderApp(); }
+function showDataTab(){ view = "data"; renderApp(); }
 function showExpensesTab(){ view = "expenses"; currentProviderId = null; renderApp(); }
 function showConsigneesTab(){ view = "consignees"; currentConsigneeId = null; renderApp(); }
 
@@ -474,7 +581,7 @@ function renderMasterLedgerView(){
         <td>${escapeHtml(t.consigneeName)}</td>
         <td>${escapeHtml(t.shipmentRef||'')}</td>
         <td>${escapeHtml(t.description||'')}</td>
-        <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: PKR ${Number(t.amount||0).toLocaleString()}</td>
+        <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}</td>
         <td><button class="del-btn" onclick="App.deleteConsigneeTxn('${t.id}')">✕</button></td>
       </tr>`).join("");
 
@@ -488,6 +595,7 @@ function renderMasterLedgerView(){
     <div class="search">
       <input id="ledgerSearchBox" type="text" placeholder="Filter by party, shipment ref, or description..." oninput="App.render()">
     </div>
+    <div style="margin-bottom:14px;"><button class="btn-nextstage" style="padding:8px 16px;border:none;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;background:var(--green);color:#fff;" onclick="App.exportLedgerExcel('master')">⬇ Export Excel</button></div>
 
     <div class="section-title">Expenses Ledger — Service Providers</div>
     ${expenseRows ? `
@@ -517,6 +625,8 @@ function renderListView(){
         const stages = s.stages || emptyStages();
         const doneCount = applicable.filter(st => stages[st.key]?.done).length;
         const pct = Math.round((doneCount / applicable.length) * 100);
+        const nextSt = applicable.find(st => !stages[st.key]?.done);
+        const nextLabel = nextSt ? `Next: ${nextSt.short}` : "✓ All documents done";
         const routeBadge = s.routing === "direct"
           ? `<span style="font-size:.7rem;background:#eef2f7;color:#6b7280;padding:2px 8px;border-radius:10px;margin-left:8px;">Direct Export</span>`
           : `<span style="font-size:.7rem;background:#e6f4ea;color:#3f8f4f;padding:2px 8px;border-radius:10px;margin-left:8px;">Via Saif Al Sahra (UAE)</span>`;
@@ -524,13 +634,14 @@ function renderListView(){
         <div class="shipment-card" onclick="App.openShipment('${s.id}')">
           <div>
             <div class="ref">${escapeHtml(s.ref || '(no ref)')}${routeBadge}</div>
-            <div class="cust">${escapeHtml(s.customer || '')}</div>
+            <div class="cust">${escapeHtml(s.customer || '')} <span style="color:${nextSt?'var(--orange)':'var(--green)'};font-weight:600;">· ${escapeHtml(nextLabel)}</span></div>
           </div>
           <div class="right">
             <div class="progress-wrap">
               <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
               <div class="progress-label">${doneCount}/${applicable.length} documents</div>
             </div>
+            <button class="del-btn" title="Duplicate shipment" style="color:var(--navy);" onclick="event.stopPropagation(); App.duplicateShipment('${s.id}')">⧉</button>
             <button class="del-btn" onclick="event.stopPropagation(); App.deleteShipment('${s.id}','${escapeHtml(s.ref||'')}')">✕</button>
           </div>
         </div>`;
@@ -540,14 +651,18 @@ function renderListView(){
     <div class="add-card">
       <h2>New Shipment</h2>
       <div class="add-row">
-        <input id="newRef" type="text" placeholder="Shipment / Invoice Ref (e.g. EXP-2026-014)">
-        <input id="newCustomer" type="text" placeholder="Buyer / Customer Name">
+        <input id="newRef" type="text" value="${escapeHtml(nextRefSuggestion())}" placeholder="Shipment / Invoice Ref (e.g. EXP-2026-014)">
+        <input id="newCustomer" type="text" list="consigneeNames" placeholder="Customer — pick from Consignees list" autocomplete="off">
+        <datalist id="consigneeNames">
+          ${consignees.map(c => `<option value="${escapeHtml(c.name)}">`).join("")}
+        </datalist>
         <select id="newRouting" style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">
           <option value="uae">Via Saif Al Sahra (UAE) — 11 documents</option>
           <option value="direct">Direct Export (other country) — 9 documents</option>
         </select>
         <button id="addBtn" onclick="App.addShipment()">Add Shipment</button>
       </div>
+      ${consignees.length === 0 ? `<div style="font-size:.78rem;color:var(--muted);margin-top:8px;">Tip: add your customers on the 👥 Consignees tab first — then they appear in the customer dropdown here and their address auto-fills on documents.</div>` : ""}
     </div>
     <div class="search">
       <input id="searchBox" type="text" placeholder="Search by reference or customer..." oninput="App.render()">
@@ -565,13 +680,31 @@ function addShipment(){
   try{
     const header = {};
     HEADER_FIELDS.forEach(f => header[f.name] = f.default || "");
+    const settings = getSettings();
+    // pre-fill exporter address from settings (last used for that entity)
+    if(settings.exporterAddresses && settings.exporterAddresses[header.exporterEntity]){
+      header.exporterAddress = settings.exporterAddresses[header.exporterEntity];
+    }
+    // pre-fill repeat fields from last shipment (final destination intentionally left blank)
+    const lastHeader = settings.lastHeader || {};
+    ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
+      if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
+    });
+    // pre-fill buyer address from the consignee record
+    const matchedConsignee = consignees.find(c => c.name.toLowerCase() === customer.toLowerCase());
+    if(matchedConsignee && matchedConsignee.address){
+      header.buyerAddress = matchedConsignee.address;
+    }
     if(routingEl.value === "uae"){
       header.finalDestination = header.finalDestination || "UAE";
       header.consignee = header.consignee || "Saif Al Sahra";
+    } else {
+      header.consignee = header.consignee || customer;
     }
     localAdd({
       ref, customer, header,
       routing: routingEl.value,
+      consigneeId: matchedConsignee ? matchedConsignee.id : null,
       items: [emptyItem()],
       stages: emptyStages(),
       documents: {}
@@ -589,6 +722,37 @@ function deleteShipment(shipId, ref){
   if(!confirm(`Delete shipment "${ref}"? This cannot be undone.`)) return;
   localDelete(shipId);
   toast("Shipment deleted");
+  refreshFromStorage();
+}
+
+// Suggest the next reference by incrementing the trailing number of the most recent ref
+function nextRefSuggestion(){
+  if(shipments.length === 0) return "";
+  const lastRef = shipments[0].ref || "";
+  const m = lastRef.match(/^(.*?)(\d+)\s*$/);
+  if(!m) return "";
+  const nextNum = String(Number(m[2]) + 1).padStart(m[2].length, "0");
+  return m[1] + nextNum;
+}
+
+function duplicateShipment(shipId){
+  const src = shipments.find(x => x.id === shipId);
+  if(!src) return;
+  const suggested = nextRefSuggestion() || (src.ref + "-COPY");
+  const newRef = prompt("New shipment reference:", suggested);
+  if(!newRef || !newRef.trim()) return;
+  localAdd({
+    ref: newRef.trim(),
+    customer: src.customer || "",
+    header: { ...(src.header || {}) },
+    routing: src.routing || "uae",
+    consigneeId: src.consigneeId || null,
+    items: (src.items || [emptyItem()]).map(it => ({...it})),
+    packingItems: (src.packingItems || []).map(it => ({...it})),
+    stages: emptyStages(),
+    documents: {}
+  });
+  toast("Shipment duplicated — documents reset, items & details copied");
   refreshFromStorage();
 }
 
@@ -697,6 +861,7 @@ function renderLedgerView(p){
         <div class="ref">${escapeHtml(p.name)}</div>
         <div class="cust">${escapeHtml(p.type)}${p.contact ? ' · ' + escapeHtml(p.contact) : ''}</div>
       </div>
+      <div><button style="padding:8px 16px;border:none;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;background:var(--green);color:#fff;" onclick="App.exportLedgerExcel('provider')">⬇ Export Excel</button></div>
     </div>
 
     <div class="ledger-summary">
@@ -809,6 +974,391 @@ function openConsigneeLedger(consigneeId){
 }
 function backToConsignees(){ view = "consignees"; currentConsigneeId = null; renderApp(); }
 
+// ================= ITEM CATALOG =================
+function renderCatalogView(){
+  const items = listCatalog();
+  const rows = items.length === 0
+    ? `<div class="empty">No items yet. Add products below, or they'll be learned automatically when you save a packing list or invoice.</div>`
+    : `<table class="ledger-table">
+        <thead><tr><th>Description</th><th>HS Code</th><th>UOM</th><th>Units / Carton</th><th>CBM / Carton</th><th>Unit Price</th><th></th></tr></thead>
+        <tbody>${items.map(c => `
+          <tr>
+            <td>${escapeHtml(c.description)}</td>
+            <td>${escapeHtml(c.hsCode)}</td>
+            <td>${escapeHtml(c.uom)}</td>
+            <td>${escapeHtml(c.unitPacked)}</td>
+            <td>${escapeHtml(c.cbmPerCarton)}</td>
+            <td>${escapeHtml(c.unitPrice)}</td>
+            <td><button class="del-btn" onclick="App.removeCatalogItem('${c.id}','${escapeHtml(c.description)}')">✕</button></td>
+          </tr>`).join("")}</tbody>
+      </table>`;
+
+  return `
+    <div class="add-card">
+      <h2>Add Product</h2>
+      <div class="add-row" style="flex-wrap:wrap;">
+        <input id="catDesc" type="text" placeholder="Item Description (e.g. Standard Dust Mop 60 cm with Frame)" style="min-width:280px;">
+        <input id="catHs" type="text" placeholder="HS Code" value="96039000" style="max-width:120px;">
+        <input id="catUom" type="text" placeholder="UOM" value="Pcs" style="max-width:80px;">
+        <input id="catUnitPacked" type="text" placeholder="Units/Carton" style="max-width:110px;">
+        <input id="catCbm" type="text" placeholder="CBM/Carton" style="max-width:110px;">
+        <input id="catPrice" type="text" placeholder="Unit Price" style="max-width:100px;">
+        <button onclick="App.addCatalogItem()">Add Item</button>
+      </div>
+      <div style="font-size:.78rem;color:var(--muted);margin-top:8px;">These auto-fill packing list and invoice rows when you pick the item by name. The catalog also learns automatically from every packing list you save.</div>
+    </div>
+    ${rows}`;
+}
+function addCatalogItem(){
+  const desc = document.getElementById("catDesc").value.trim();
+  if(!desc){ toast("Enter an item description", true); return; }
+  upsertCatalogItem({
+    description: desc,
+    hsCode: document.getElementById("catHs").value.trim(),
+    uom: document.getElementById("catUom").value.trim(),
+    unitPacked: document.getElementById("catUnitPacked").value.trim(),
+    cbmPerCarton: document.getElementById("catCbm").value.trim(),
+    unitPrice: document.getElementById("catPrice").value.trim()
+  });
+  toast("Item saved");
+  renderApp();
+}
+function removeCatalogItem(id, name){
+  if(!confirm(`Remove "${name}" from the item catalog?`)) return;
+  deleteCatalogItem(id);
+  toast("Item removed");
+  renderApp();
+}
+
+// When an item is picked from the catalog datalist, fill the row's known values
+function packingCatalogFill(i){
+  syncPackingRowsFromDom();
+  const row = packingItemRows[i];
+  if(!row) return;
+  const cat = findCatalogItem(row.description);
+  if(!cat) return;
+  if(cat.hsCode) row.hsCode = cat.hsCode;
+  if(cat.uom) row.uom = cat.uom;
+  if(cat.unitPacked) row.unitPacked = cat.unitPacked;
+  if(cat.cbmPerCarton) row.cbmPerCarton = cat.cbmPerCarton;
+  document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
+}
+function itemCatalogFill(i){
+  syncItemRowsFromDom();
+  const row = modalItemRows[i];
+  if(!row) return;
+  const cat = findCatalogItem(row.description);
+  if(!cat) return;
+  if(cat.hsCode) row.hsCode = cat.hsCode;
+  if(cat.uom) row.unit = cat.uom;
+  if(cat.unitPrice) row.unitPrice = cat.unitPrice;
+  document.getElementById("itemsEditorWrap").innerHTML = renderItemsEditor();
+}
+
+// ================= DATA TAB: BACKUP / RESTORE + EXCEL IMPORT =================
+const ALL_STORAGE_KEYS = [STORAGE_KEY, PROVIDERS_KEY, TXNS_KEY, CONSIGNEES_KEY, CONSIGNEE_TXNS_KEY, SETTINGS_KEY, CATALOG_KEY];
+let importState = null; // { rows, headers, target, partyId }
+
+function renderDataView(){
+  const providerOptions = providers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  const consigneeOptions = consignees.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+
+  let mappingBlock = "";
+  if(importState && importState.rows){
+    const headerOpts = `<option value="">— not in file —</option>` + importState.headers.map((h,i) => `<option value="${i}">${escapeHtml(h || 'Column ' + (i+1))}</option>`).join("");
+    const isCatalog = importState.target === "catalog";
+    const previewRows = importState.rows.slice(0, 5).map(r =>
+      `<tr>${importState.headers.map((_,i) => `<td style="font-size:.76rem;">${escapeHtml(r[i] != null ? String(r[i]) : '')}</td>`).join("")}</tr>`).join("");
+
+    const ledgerMappings = `
+      <div class="field"><label>Date column</label><select id="mapDate">${headerOpts}</select></div>
+      <div class="field"><label>Description column</label><select id="mapDesc">${headerOpts}</select></div>
+      <div class="field"><label>Shipment Ref column (optional)</label><select id="mapShip">${headerOpts}</select></div>
+      <div class="field"><label>${importState.target==='consignee' ? 'Invoice / Debit' : 'Charge / Debit'} column</label><select id="mapDebit">${headerOpts}</select></div>
+      <div class="field"><label>${importState.target==='consignee' ? 'Receipt / Credit' : 'Payment / Credit'} column</label><select id="mapCredit">${headerOpts}</select></div>
+      <div class="field"><label>Currency of amounts</label><select id="mapCurrency"><option>PKR</option><option>USD</option><option>AED</option></select></div>`;
+
+    const catalogMappings = `
+      <div class="field"><label>Description column</label><select id="mapDesc">${headerOpts}</select></div>
+      <div class="field"><label>HS Code column</label><select id="mapHs">${headerOpts}</select></div>
+      <div class="field"><label>UOM column</label><select id="mapUom">${headerOpts}</select></div>
+      <div class="field"><label>Units/Carton column</label><select id="mapUnitPacked">${headerOpts}</select></div>
+      <div class="field"><label>CBM/Carton column</label><select id="mapCbm">${headerOpts}</select></div>
+      <div class="field"><label>Unit Price column</label><select id="mapPrice">${headerOpts}</select></div>`;
+
+    mappingBlock = `
+      <div class="section-title">Step 3 — Match the columns</div>
+      <div style="overflow-x:auto;margin-bottom:12px;">
+        <table class="ledger-table"><thead><tr>${importState.headers.map(h => `<th>${escapeHtml(h||'')}</th>`).join("")}</tr></thead>
+        <tbody>${previewRows}</tbody></table>
+      </div>
+      <div class="field-grid">${isCatalog ? catalogMappings : ledgerMappings}</div>
+      <div class="page-actions" style="border-top:none;padding-top:0;margin-top:14px;">
+        <div style="font-size:.78rem;color:var(--muted);">${importState.rows.length} data rows found</div>
+        <div class="save-group"><button class="btn-nextstage" onclick="App.runImport()">Import Now</button></div>
+      </div>`;
+  }
+
+  return `
+    <div class="add-card">
+      <h2>🏢 Company Settings — filled once, used on every document</h2>
+      <div class="section-title">Bank Details (for invoices)</div>
+      <div class="field-grid">
+        <div class="field"><label>Bank Beneficiary</label><input id="setBankBeneficiary" type="text" value="${escapeHtml((getSettings().bank||{}).bankBeneficiary||'')}"></div>
+        <div class="field"><label>Bank Name</label><input id="setBankName" type="text" value="${escapeHtml((getSettings().bank||{}).bankName||'')}"></div>
+        <div class="field"><label>Account No / IBAN</label><input id="setAccountNo" type="text" value="${escapeHtml((getSettings().bank||{}).accountNo||'')}"></div>
+        <div class="field"><label>SWIFT Code</label><input id="setSwiftCode" type="text" value="${escapeHtml((getSettings().bank||{}).swiftCode||'')}"></div>
+      </div>
+      <div class="section-title">Exporter Addresses</div>
+      <div class="field-grid">
+        ${EXPORTERS.map((e,i) => `<div class="field"><label>${escapeHtml(e)}</label><input id="setExpAddr${i}" type="text" value="${escapeHtml((getSettings().exporterAddresses||{})[e]||'')}"></div>`).join("")}
+      </div>
+      <div class="page-actions" style="border-top:none;padding-top:0;margin-top:14px;">
+        <div></div>
+        <div class="save-group"><button class="btn-nextstage" onclick="App.saveCompanySettings()">Save Settings</button></div>
+      </div>
+    </div>
+
+    <div class="add-card">
+      <h2>💾 Backup & Restore</h2>
+      <div style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">Everything lives in this browser only. Take a backup regularly — one "clear browsing data" wipes it all.</div>
+      <div class="add-row">
+        <button onclick="App.downloadBackup()" style="background:var(--green);">⬇ Download Full Backup (JSON)</button>
+        <label style="background:var(--navy);color:#fff;padding:10px 18px;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;">
+          ⬆ Restore from Backup<input type="file" accept=".json" style="display:none;" onchange="App.restoreBackup(this)">
+        </label>
+      </div>
+    </div>
+
+    <div class="add-card">
+      <h2>📤 Import Old Records from Excel</h2>
+      <div class="section-title">Step 1 — What are you importing?</div>
+      <div class="field-grid">
+        <div class="field"><label>Import into</label>
+          <select id="importTarget" onchange="App.importTargetChanged()">
+            <option value="">— select —</option>
+            <option value="provider">Service Provider ledger (expenses)</option>
+            <option value="consignee">Consignee ledger (receivables)</option>
+            <option value="catalog">Item catalog (products)</option>
+          </select>
+        </div>
+        <div class="field" id="importPartyWrap" style="display:none;">
+          <label id="importPartyLabel">Party</label>
+          <select id="importParty"></select>
+        </div>
+      </div>
+      <div class="section-title">Step 2 — Upload the Excel file</div>
+      <input type="file" accept=".xlsx,.xls,.csv" onchange="App.importFileSelected(this)" style="font-size:.85rem;">
+      <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">First row should be column headings. One sheet per file (the first sheet is read).</div>
+      ${mappingBlock}
+    </div>`;
+}
+
+function saveCompanySettings(){
+  const st = getSettings();
+  st.bank = st.bank || {};
+  st.exporterAddresses = st.exporterAddresses || {};
+  st.bank.bankBeneficiary = document.getElementById("setBankBeneficiary").value.trim();
+  st.bank.bankName = document.getElementById("setBankName").value.trim();
+  st.bank.accountNo = document.getElementById("setAccountNo").value.trim();
+  st.bank.swiftCode = document.getElementById("setSwiftCode").value.trim();
+  EXPORTERS.forEach((e,i) => {
+    const v = document.getElementById("setExpAddr"+i).value.trim();
+    if(v) st.exporterAddresses[e] = v;
+  });
+  saveSettings(st);
+  toast("Company settings saved — documents will pre-fill from these");
+}
+
+function importTargetChanged(){
+  const target = document.getElementById("importTarget").value;
+  const wrap = document.getElementById("importPartyWrap");
+  const sel = document.getElementById("importParty");
+  const label = document.getElementById("importPartyLabel");
+  if(target === "provider"){
+    wrap.style.display = "";
+    label.textContent = "Which provider's ledger?";
+    sel.innerHTML = providers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("") || `<option value="">— add providers first —</option>`;
+  } else if(target === "consignee"){
+    wrap.style.display = "";
+    label.textContent = "Which consignee's ledger?";
+    sel.innerHTML = consignees.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("") || `<option value="">— add consignees first —</option>`;
+  } else {
+    wrap.style.display = "none";
+  }
+  if(importState){ importState.target = target; }
+}
+
+function importFileSelected(inputEl){
+  const target = document.getElementById("importTarget").value;
+  if(!target){ toast("Select what you're importing first (Step 1)", true); inputEl.value=""; return; }
+  const partyEl = document.getElementById("importParty");
+  const partyId = (target === "catalog") ? null : (partyEl && partyEl.value);
+  if(target !== "catalog" && !partyId){ toast("Select the party whose ledger this is", true); inputEl.value=""; return; }
+  const file = inputEl.files && inputEl.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try{
+      const wb = XLSX.read(e.target.result, { type:"array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header:1, raw:false, defval:"" });
+      if(aoa.length < 2){ toast("File has no data rows", true); return; }
+      importState = { headers: aoa[0].map(h => String(h)), rows: aoa.slice(1).filter(r => r.some(c => String(c).trim() !== "")), target, partyId };
+      renderApp();
+      toast("File read — match the columns in Step 3");
+    }catch(err){
+      console.error(err);
+      toast("Could not read file: " + err.message, true);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function importParseAmount(v){
+  const n = parseFloat(String(v).replace(/,/g,"").replace(/[^\d.\-]/g,""));
+  return isNaN(n) ? 0 : n;
+}
+function importParseDate(v){
+  const s = String(v).trim();
+  if(!s) return "";
+  const d = new Date(s);
+  if(!isNaN(d)) return d.toISOString().slice(0,10);
+  return s; // keep original text if unparseable
+}
+
+function runImport(){
+  if(!importState || !importState.rows){ toast("Upload a file first", true); return; }
+  const col = id => {
+    const el = document.getElementById(id);
+    return el && el.value !== "" ? parseInt(el.value,10) : null;
+  };
+  let count = 0;
+  try{
+    if(importState.target === "catalog"){
+      const cDesc = col("mapDesc");
+      if(cDesc === null){ toast("Description column is required", true); return; }
+      importState.rows.forEach(r => {
+        const description = String(r[cDesc]||"").trim();
+        if(!description) return;
+        upsertCatalogItem({
+          description,
+          hsCode: col("mapHs")!==null ? String(r[col("mapHs")]||"").trim() : "",
+          uom: col("mapUom")!==null ? String(r[col("mapUom")]||"").trim() : "",
+          unitPacked: col("mapUnitPacked")!==null ? String(r[col("mapUnitPacked")]||"").trim() : "",
+          cbmPerCarton: col("mapCbm")!==null ? String(r[col("mapCbm")]||"").trim() : "",
+          unitPrice: col("mapPrice")!==null ? String(r[col("mapPrice")]||"").trim() : ""
+        });
+        count++;
+      });
+    } else {
+      const cDate = col("mapDate"), cDesc = col("mapDesc"), cShip = col("mapShip"), cDebit = col("mapDebit"), cCredit = col("mapCredit");
+      const currency = document.getElementById("mapCurrency").value;
+      if(cDebit === null && cCredit === null){ toast("Map at least the debit or credit column", true); return; }
+      const isConsignee = importState.target === "consignee";
+      importState.rows.forEach(r => {
+        const date = cDate !== null ? importParseDate(r[cDate]) : "";
+        const description = cDesc !== null ? String(r[cDesc]||"").trim() : "Imported";
+        const shipmentRef = cShip !== null ? String(r[cShip]||"").trim() : "";
+        const debit = cDebit !== null ? importParseAmount(r[cDebit]) : 0;
+        const credit = cCredit !== null ? importParseAmount(r[cCredit]) : 0;
+        if(debit > 0){
+          if(isConsignee) addConsigneeTxnRecord({ consigneeId: importState.partyId, type:"invoice", date, amount:debit, currency, shipmentRef, description, imported:true });
+          else addTxnRecord({ providerId: importState.partyId, type:"charge", date, amount:debit, shipmentRef, description, imported:true });
+          count++;
+        }
+        if(credit > 0){
+          if(isConsignee) addConsigneeTxnRecord({ consigneeId: importState.partyId, type:"receipt", date, amount:credit, currency, shipmentRef, description, imported:true });
+          else addTxnRecord({ providerId: importState.partyId, type:"payment", date, amount:credit, shipmentRef, description, imported:true });
+          count++;
+        }
+      });
+    }
+    importState = null;
+    refreshFromStorage();
+    view = "data";
+    renderApp();
+    toast(`Imported ${count} records`);
+  }catch(err){
+    console.error(err);
+    toast("Import error: " + err.message, true);
+  }
+}
+
+// ---------- Backup / Restore ----------
+function downloadBackup(){
+  const backup = { app:"ExportDocWorkflow", exportedAt: new Date().toISOString(), data:{} };
+  ALL_STORAGE_KEYS.forEach(k => backup.data[k] = localStorage.getItem(k));
+  const blob = new Blob([JSON.stringify(backup)], { type:"application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "ExportDocWorkflow_backup_" + new Date().toISOString().slice(0,10) + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("Backup downloaded");
+}
+function restoreBackup(inputEl){
+  const file = inputEl.files && inputEl.files[0];
+  if(!file) return;
+  if(!confirm("Restoring will REPLACE all current data in this browser with the backup. Continue?")){ inputEl.value=""; return; }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try{
+      const backup = JSON.parse(e.target.result);
+      if(!backup.data){ toast("Not a valid backup file", true); return; }
+      ALL_STORAGE_KEYS.forEach(k => {
+        if(backup.data[k] != null) localStorage.setItem(k, backup.data[k]);
+      });
+      refreshFromStorage();
+      toast("Backup restored");
+    }catch(err){
+      console.error(err);
+      toast("Restore failed: " + err.message, true);
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ---------- Excel export of ledgers ----------
+function exportLedgerExcel(kind){
+  try{
+    let aoa = [], name = "ledger";
+    if(kind === "provider" && currentProviderId){
+      const p = providers.find(x => x.id === currentProviderId);
+      name = "Expenses_" + p.name.replace(/\W+/g,"_");
+      aoa = [["Date","Description","Shipment","Charge","Payment"]];
+      let bal = 0;
+      txnsForProvider(p.id).forEach(t => {
+        aoa.push([t.date||"", t.description||"", t.shipmentRef||"", t.type==="charge"?Number(t.amount||0):"", t.type==="payment"?Number(t.amount||0):""]);
+      });
+    } else if(kind === "consignee" && currentConsigneeId){
+      const c = consignees.find(x => x.id === currentConsigneeId);
+      name = "Receivables_" + c.name.replace(/\W+/g,"_");
+      aoa = [["Date","Description","Shipment","Currency","Invoice","Receipt"]];
+      txnsForConsignee(c.id).forEach(t => {
+        aoa.push([t.date||"", t.description||"", t.shipmentRef||"", t.currency||"PKR", t.type==="invoice"?Number(t.amount||0):"", t.type==="receipt"?Number(t.amount||0):""]);
+      });
+    } else {
+      name = "Master_Ledger";
+      aoa = [["Ledger","Date","Party","Shipment","Description","Type","Currency","Amount"]];
+      listTxns().forEach(t => {
+        const p = providers.find(x => x.id === t.providerId);
+        aoa.push(["Expenses", t.date||"", p?p.name:"", t.shipmentRef||"", t.description||"", t.type, "PKR", Number(t.amount||0)]);
+      });
+      listConsigneeTxns().forEach(t => {
+        const c = consignees.find(x => x.id === t.consigneeId);
+        aoa.push(["Receivables", t.date||"", c?c.name:"", t.shipmentRef||"", t.description||"", t.type, t.currency||"PKR", Number(t.amount||0)]);
+      });
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ledger");
+    XLSX.writeFile(wb, name + ".xlsx");
+  }catch(err){
+    console.error(err);
+    toast("Export error: " + err.message, true);
+  }
+}
+
 // ================= CONSIGNEES: LEDGER =================
 function renderConsigneeLedgerView(c){
   const txns = txnsForConsignee(c.id);
@@ -820,8 +1370,8 @@ function renderConsigneeLedgerView(c){
         <td>${escapeHtml(t.date||'')}</td>
         <td>${escapeHtml(t.description||'')}</td>
         <td>${escapeHtml(t.shipmentRef||'')}</td>
-        <td class="amt-charge">${t.type==="invoice" ? "PKR "+Number(t.amount||0).toLocaleString() : ""}</td>
-        <td class="amt-payment">${t.type==="receipt" ? "PKR "+Number(t.amount||0).toLocaleString() : ""}</td>
+        <td class="amt-charge">${t.type==="invoice" ? (t.currency||"PKR")+" "+Number(t.amount||0).toLocaleString() : ""}</td>
+        <td class="amt-payment">${t.type==="receipt" ? (t.currency||"PKR")+" "+Number(t.amount||0).toLocaleString() : ""}</td>
         <td class="amt-balance">PKR ${running.toLocaleString()}</td>
         <td><button class="del-btn" onclick="App.deleteConsigneeTxn('${t.id}')">✕</button></td>
       </tr>`;
@@ -840,12 +1390,16 @@ function renderConsigneeLedgerView(c){
         <div class="ref">${escapeHtml(c.name)}</div>
         <div class="cust">${escapeHtml(c.address||'')}${c.contact ? ' · ' + escapeHtml(c.contact) : ''}</div>
       </div>
+      <div style="display:flex;gap:8px;">
+        <button style="padding:8px 16px;border:none;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;background:var(--green);color:#fff;" onclick="App.exportLedgerExcel('consignee')">⬇ Export Excel</button>
+        <button style="padding:8px 16px;border:none;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;background:#25D366;color:#fff;" onclick="App.whatsappReminder('${c.id}')">📱 WhatsApp Reminder</button>
+      </div>
     </div>
 
     <div class="ledger-summary">
-      <div class="stat"><div class="label">Total Invoiced</div><div class="value">PKR ${totalInvoiced.toLocaleString()}</div></div>
-      <div class="stat"><div class="label">Total Received</div><div class="value">PKR ${totalReceived.toLocaleString()}</div></div>
-      <div class="stat"><div class="label">Balance ${balance>0?'(Receivable)':'(Settled/Advance)'}</div><div class="value" style="color:${balance>0?'#c0392b':'#3f8f4f'}">PKR ${balance.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Total Invoiced</div><div class="value">${sumByCurrency(txns,"invoice")}</div></div>
+      <div class="stat"><div class="label">Total Received</div><div class="value">${sumByCurrency(txns,"receipt")}</div></div>
+      <div class="stat"><div class="label">Balance ${balance>0?'(Receivable)':'(Settled/Advance)'}</div><div class="value" style="color:${balance>0?'#c0392b':'#3f8f4f'}">${balanceByCurrency(txns)}</div></div>
     </div>
 
     ${txns.length === 0 ? `<div class="empty">No transactions yet.</div>` : `
@@ -941,6 +1495,16 @@ function renderShipmentFinancials(s){
   const totalInvoiced = consigneeTxns.filter(t=>t.type==="invoice").reduce((sum,t)=>sum+Number(t.amount||0),0);
   const totalReceived = consigneeTxns.filter(t=>t.type==="receipt").reduce((sum,t)=>sum+Number(t.amount||0),0);
 
+  // Invoice value from Commercial Invoice (Bank), falling back to Customer invoice, then Proforma
+  const invDoc = (s.documents && (s.documents.s5 || s.documents.s4 || s.documents.s1)) || null;
+  const invCurrency = (s.header && s.header.currency) || "USD";
+  const invoiceValue = invDoc && invDoc.items
+    ? invDoc.items.reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0)
+    : 0;
+  const marginStat = invoiceValue > 0 ? `
+      <div class="stat"><div class="label">Invoice Value</div><div class="value">${escapeHtml(invCurrency)} ${invoiceValue.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Margin (invoice − PKR expenses)</div><div class="value">${escapeHtml(invCurrency)} ${invoiceValue.toLocaleString()} − PKR ${totalCharges.toLocaleString()}</div></div>` : "";
+
   const expenseRows = expenseTxns.map(t => {
     const prov = providers.find(p => p.id === t.providerId);
     return `<tr><td>${escapeHtml(t.date||'')}</td><td>${escapeHtml(prov ? prov.name : '—')}</td><td>${escapeHtml(t.description||'')}</td>
@@ -949,7 +1513,7 @@ function renderShipmentFinancials(s){
   const consigneeRows = consigneeTxns.map(t => {
     const cons = consignees.find(c => c.id === t.consigneeId);
     return `<tr><td>${escapeHtml(t.date||'')}</td><td>${escapeHtml(cons ? cons.name : '—')}</td><td>${escapeHtml(t.description||'')}</td>
-      <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: PKR ${Number(t.amount||0).toLocaleString()}</td></tr>`;
+      <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}</td></tr>`;
   }).join("");
 
   const providerOptions = providers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
@@ -1002,6 +1566,7 @@ function renderShipmentFinancials(s){
       <div class="stat"><div class="label">Expenses Paid</div><div class="value">PKR ${totalPaidOut.toLocaleString()}</div></div>
       <div class="stat"><div class="label">Invoiced to Consignee</div><div class="value">PKR ${totalInvoiced.toLocaleString()}</div></div>
       <div class="stat"><div class="label">Received from Consignee</div><div class="value">PKR ${totalReceived.toLocaleString()}</div></div>
+      ${marginStat}
     </div>
 
     ${(expenseTxns.length || consigneeTxns.length) ? `
@@ -1048,9 +1613,37 @@ function quickAddConsigneeSubmit(ref){
   refreshFromStorage();
 }
 
+function smartDefault(f, s, header){
+  const settings = getSettings();
+  if(f.name === "invoiceNo") return s.ref;
+  if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.ref;
+  if(["invoiceDate","packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
+  if(f.name === "validityDate"){ const d = new Date(); d.setDate(d.getDate()+30); return d.toISOString().slice(0,10); }
+  if(["bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)) return (settings.bank||{})[f.name] || "";
+  if(f.name === "shipperName") return header.exporterEntity || "";
+  return f.default || "";
+}
+
 function renderStagePage(s, stageKey){
   const stage = STAGES.find(x => x.key === stageKey);
-  const header = s.header || {};
+  const header = { ...(s.header || {}) };
+  // fill gaps from reusable settings + consignee record + routing (finalDestination intentionally left manual)
+  const settings = getSettings();
+  const lastHeader = settings.lastHeader || {};
+  if(!header.exporterAddress && settings.exporterAddresses && settings.exporterAddresses[header.exporterEntity]){
+    header.exporterAddress = settings.exporterAddresses[header.exporterEntity];
+  }
+  if(!header.buyerAddress){
+    const mc = consignees.find(c => c.id === s.consigneeId)
+      || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
+    if(mc && mc.address) header.buyerAddress = mc.address;
+  }
+  if(!header.consignee){
+    header.consignee = s.routing === "direct" ? (s.customer || "") : "Saif Al Sahra";
+  }
+  ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
+    if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
+  });
   const savedDoc = (s.documents && s.documents[stageKey]) || {};
   modalItemRows = (savedDoc.items && savedDoc.items.length ? savedDoc.items : s.items) || [emptyItem()];
   modalItemRows = modalItemRows.map(it => ({...it}));
@@ -1060,8 +1653,10 @@ function renderStagePage(s, stageKey){
 
   const headerFieldsHtml = HEADER_FIELDS.map(f => `
     <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
-  const extraFieldsHtml = stage.extraFields.map(f => `
-    <div class="field"><label>${f.label}</label>${fieldInput(f, savedDoc[f.name])}</div>`).join("");
+  const extraFieldsHtml = stage.extraFields.map(f => {
+    const val = savedDoc[f.name] != null && savedDoc[f.name] !== "" ? savedDoc[f.name] : smartDefault(f, s, header);
+    return `<div class="field"><label>${f.label}</label>${fieldInput(f, val)}</div>`;
+  }).join("");
 
   let itemsBlock = "";
   if(stage.hasItems){
@@ -1132,9 +1727,10 @@ function fieldInput(f, value){
 }
 
 function renderItemsEditor(){
+  const catalogOptions = listCatalog().map(c => `<option value="${escapeHtml(c.description)}">`).join("");
   const rows = modalItemRows.map((it, i) => `
     <tr>
-      <td><input data-item="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description"></td>
+      <td><input data-item="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description" list="catalogItemNames" autocomplete="off" onchange="App.itemCatalogFill(${i})"></td>
       <td><input data-item="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code"></td>
       <td><input data-item="qty" data-idx="${i}" value="${escapeHtml(it.qty)}" placeholder="Qty"></td>
       <td><input data-item="unit" data-idx="${i}" value="${escapeHtml(it.unit)}" placeholder="Unit"></td>
@@ -1142,6 +1738,7 @@ function renderItemsEditor(){
       <td><button class="rm" onclick="App.removeItemRow(${i})">✕</button></td>
     </tr>`).join("");
   return `
+    <datalist id="catalogItemNames">${catalogOptions}</datalist>
     <table class="items-table">
       <thead><tr><th>Description</th><th>HS Code</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th></th></tr></thead>
       <tbody id="itemsTbody">${rows}</tbody>
@@ -1169,6 +1766,7 @@ function removeItemRow(i){
 
 // ---------- Packing list items (Babji Manufacturing format) ----------
 function renderPackingItemsEditor(){
+  const catalogOptions = listCatalog().map(c => `<option value="${escapeHtml(c.description)}">`).join("");
   const rows = packingItemRows.map((it, i) => {
     const unitPacked = parseFloat(it.unitPacked)||0;
     const totalPacked = parseFloat(it.totalPacked)||0;
@@ -1178,7 +1776,7 @@ function renderPackingItemsEditor(){
     return `
     <tr>
       <td><input data-pitem="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code" style="width:90px;"></td>
-      <td><input data-pitem="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description"></td>
+      <td><input data-pitem="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description" list="catalogPackingNames" autocomplete="off" onchange="App.packingCatalogFill(${i})"></td>
       <td><input data-pitem="uom" data-idx="${i}" value="${escapeHtml(it.uom)}" placeholder="UOM" style="width:55px;"></td>
       <td><input data-pitem="unitPacked" data-idx="${i}" value="${escapeHtml(it.unitPacked)}" placeholder="Unit Packed" style="width:80px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="packingType" data-idx="${i}" value="${escapeHtml(it.packingType)}" placeholder="Packing" style="width:75px;"></td>
@@ -1193,6 +1791,7 @@ function renderPackingItemsEditor(){
   const totals = packingTotals();
 
   return `
+    <datalist id="catalogPackingNames">${catalogOptions}</datalist>
     <table class="items-table">
       <thead><tr><th>HS Code</th><th>Item Description</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Qty (Packed)</th><th>CBM / Carton</th><th>Total Qty (UOM)</th><th>Total CBM</th><th></th></tr></thead>
       <tbody id="packingTbody">${rows}</tbody>
@@ -1330,6 +1929,40 @@ function saveStageData(shouldPrint, goToStageKey){
     updates[`documents.${currentStageKey}`] = docData;
     updates[`stages.${currentStageKey}`] = { done:true, completedAt: new Date().toISOString() };
     localUpdate(currentShipId, updates);
+    rememberReusables(headerData, extraData);
+
+    // Catalog auto-learn
+    if(stage.packingItems){
+      packingItemRows.forEach(it => upsertCatalogItem({
+        description: it.description, hsCode: it.hsCode, uom: it.uom,
+        unitPacked: it.unitPacked, cbmPerCarton: it.cbmPerCarton
+      }));
+    } else if(stage.hasItems){
+      modalItemRows.forEach(it => upsertCatalogItem({
+        description: it.description, hsCode: it.hsCode, uom: it.unit, unitPrice: it.unitPrice
+      }));
+    }
+
+    // Auto-post receivable: Commercial Invoice (Bank) total goes to the consignee's ledger
+    if(currentStageKey === "s5"){
+      const total = modalItemRows.reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0);
+      const cons = consignees.find(c => c.id === s.consigneeId)
+        || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
+      if(total > 0 && cons){
+        const autoKey = s.id + "_s5";
+        // replace any previous auto entry for this shipment's invoice (re-saves shouldn't double-post)
+        listConsigneeTxns().filter(t => t.autoKey === autoKey).forEach(t => deleteConsigneeTxnRecord(t.id));
+        addConsigneeTxnRecord({
+          consigneeId: cons.id, type: "invoice",
+          date: extraData.invoiceDate || new Date().toISOString().slice(0,10),
+          amount: total, currency: headerData.currency || "USD",
+          shipmentRef: s.ref, autoKey,
+          description: "Auto: Commercial Invoice " + (extraData.invoiceNo || s.ref)
+        });
+        toast("Saved — invoice total posted to " + cons.name + "'s ledger");
+      }
+    }
+
     pendingUploadFile = null;
     toast(shouldPrint ? "Saved — opening print view" : "Saved");
     if(shouldPrint) printDocument(stage, headerData, docData, s.ref, s.customer);
@@ -1535,7 +2168,11 @@ window.App = {
   saveStageData, addItemRow, removeItemRow, render: renderApp,
   addPackingItemRow, removePackingItemRow, packingRecalc,
   stageFileSelected, downloadStageFile,
-  showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab,
+  duplicateShipment,
+  showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab, showCatalogTab, showDataTab,
+  addCatalogItem, removeCatalogItem, packingCatalogFill, itemCatalogFill,
+  importTargetChanged, importFileSelected, runImport, saveCompanySettings,
+  downloadBackup, restoreBackup, exportLedgerExcel, whatsappReminder,
   addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
   addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn,
   openQuickExpenseForm, openQuickConsigneeForm, closeQuickForms, quickAddExpenseSubmit, quickAddConsigneeSubmit
