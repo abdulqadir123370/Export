@@ -256,7 +256,14 @@ function rememberReusables(headerData, extraData){
     if(headerData[k]) st.lastHeader[k] = headerData[k];
   });
   ["bankBeneficiary","bankName","accountNo","swiftCode"].forEach(k => {
-    if(extraData[k]) st.bank[k] = extraData[k];
+    if(extraData[k]){
+      st.bank[k] = extraData[k];
+      if(headerData.exporterEntity){
+        st.bankByEntity = st.bankByEntity || {};
+        st.bankByEntity[headerData.exporterEntity] = st.bankByEntity[headerData.exporterEntity] || {};
+        st.bankByEntity[headerData.exporterEntity][k] = extraData[k];
+      }
+    }
   });
   saveSettings(st);
   // save buyer address back onto the consignee record so it's known next time
@@ -346,8 +353,8 @@ function whatsappReminder(consigneeId){
 const EXPORTERS = ["Royal Plastics & Household", "Babji Traders", "Babji Manufacturing"];
 
 const HEADER_FIELDS = [
-  { name:"exporterEntity", label:"Exporter Entity", type:"select", options:EXPORTERS, default:EXPORTERS[0] },
-  { name:"exporterAddress", label:"Exporter Address", type:"text" },
+  { name:"exporterEntity", label:"Shipper", type:"select", options:EXPORTERS, default:EXPORTERS[0] },
+  { name:"exporterAddress", label:"Shipper Address", type:"text" },
   { name:"buyerAddress", label:"Buyer Address", type:"text" },
   { name:"consignee", label:"Consignee (if different)", type:"text" },
   { name:"notifyParty", label:"Notify Party", type:"text" },
@@ -474,16 +481,46 @@ function emptyStages(){
   STAGES.forEach(s => obj[s.key] = { done:false, completedAt:null });
   return obj;
 }
-// UAE shipments route via Saif Al Sahra (own company clears + redistributes) => all 11 stages.
+// UAE shipments route via Saif Al Sahra: their proforma (s10) comes FIRST, then all other documents, tax invoice last.
 // Direct exports to other countries skip the Saif Al Sahra invoices (s10, s11) => 9 stages.
 function stagesForShipment(s){
   if(s && s.routing === "direct"){
     return STAGES.filter(st => st.key !== "s10" && st.key !== "s11");
   }
-  return STAGES;
+  const s10 = STAGES.find(st => st.key === "s10");
+  return [s10, ...STAGES.filter(st => st.key !== "s10")];
+}
+// Sequential invoice numbers, shared across the whole app. Starting number adjustable in Company Settings.
+function nextInvoiceNo(){
+  const st = getSettings();
+  const n = st.invoiceCounter || 1;
+  st.invoiceCounter = n + 1;
+  saveSettings(st);
+  return String(n);
 }
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
 function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", cbmPerCarton:"" }; }
+// Build packing list rows from the invoice items + catalog knowledge, so nothing is typed twice
+function derivePackingFromItems(s){
+  const src = (s.items || []).filter(it => (it.description||"").trim());
+  if(src.length === 0) return [emptyPackingItem()];
+  return src.map(it => {
+    const cat = findCatalogItem(it.description) || {};
+    const unitPacked = cat.unitPacked || "";
+    const qty = parseFloat(it.qty) || 0;
+    const perCtn = parseFloat(unitPacked) || 0;
+    const totalPacked = (qty && perCtn) ? String(Math.ceil(qty / perCtn)) : "";
+    return {
+      hsCode: it.hsCode || cat.hsCode || "96039000",
+      description: it.description,
+      uom: it.unit || cat.uom || "Pcs",
+      unitPacked,
+      packingType: "Carton",
+      totalPacked,
+      cbmPerCarton: cat.cbmPerCarton || ""
+    };
+  });
+}
 
 function refreshFromStorage(){
   shipments = localList();
@@ -704,6 +741,7 @@ function addShipment(){
     localAdd({
       ref, customer, header,
       routing: routingEl.value,
+      invoiceNo: nextInvoiceNo(),
       consigneeId: matchedConsignee ? matchedConsignee.id : null,
       items: [emptyItem()],
       stages: emptyStages(),
@@ -1101,17 +1139,24 @@ function renderDataView(){
 
   return `
     <div class="add-card">
-      <h2>🏢 Company Settings — filled once, used on every document</h2>
-      <div class="section-title">Bank Details (for invoices)</div>
+      <h2>🏢 Shipper Details — filled once, used on every document</h2>
+      ${EXPORTERS.map((e,i) => {
+        const st = getSettings();
+        const addr = (st.exporterAddresses||{})[e] || "";
+        const bank = (st.bankByEntity||{})[e] || st.bank || {};
+        return `
+        <div class="section-title">${escapeHtml(e)}</div>
+        <div class="field-grid">
+          <div class="field" style="grid-column:1/-1;"><label>Address</label><input id="setExpAddr${i}" type="text" value="${escapeHtml(addr)}"></div>
+          <div class="field"><label>Bank Beneficiary</label><input id="setBen${i}" type="text" value="${escapeHtml(bank.bankBeneficiary||'')}"></div>
+          <div class="field"><label>Bank Name</label><input id="setBank${i}" type="text" value="${escapeHtml(bank.bankName||'')}"></div>
+          <div class="field"><label>Account No / IBAN</label><input id="setAcct${i}" type="text" value="${escapeHtml(bank.accountNo||'')}"></div>
+          <div class="field"><label>SWIFT Code</label><input id="setSwift${i}" type="text" value="${escapeHtml(bank.swiftCode||'')}"></div>
+        </div>`;
+      }).join("")}
+      <div class="section-title">Invoice Numbering</div>
       <div class="field-grid">
-        <div class="field"><label>Bank Beneficiary</label><input id="setBankBeneficiary" type="text" value="${escapeHtml((getSettings().bank||{}).bankBeneficiary||'')}"></div>
-        <div class="field"><label>Bank Name</label><input id="setBankName" type="text" value="${escapeHtml((getSettings().bank||{}).bankName||'')}"></div>
-        <div class="field"><label>Account No / IBAN</label><input id="setAccountNo" type="text" value="${escapeHtml((getSettings().bank||{}).accountNo||'')}"></div>
-        <div class="field"><label>SWIFT Code</label><input id="setSwiftCode" type="text" value="${escapeHtml((getSettings().bank||{}).swiftCode||'')}"></div>
-      </div>
-      <div class="section-title">Exporter Addresses</div>
-      <div class="field-grid">
-        ${EXPORTERS.map((e,i) => `<div class="field"><label>${escapeHtml(e)}</label><input id="setExpAddr${i}" type="text" value="${escapeHtml((getSettings().exporterAddresses||{})[e]||'')}"></div>`).join("")}
+        <div class="field"><label>Next Invoice No (auto-assigned to each new shipment)</label><input id="setInvoiceCounter" type="text" inputmode="numeric" pattern="[0-9]*" value="${escapeHtml(String(getSettings().invoiceCounter||1))}"></div>
       </div>
       <div class="page-actions" style="border-top:none;padding-top:0;margin-top:14px;">
         <div></div>
@@ -1156,18 +1201,22 @@ function renderDataView(){
 
 function saveCompanySettings(){
   const st = getSettings();
-  st.bank = st.bank || {};
   st.exporterAddresses = st.exporterAddresses || {};
-  st.bank.bankBeneficiary = document.getElementById("setBankBeneficiary").value.trim();
-  st.bank.bankName = document.getElementById("setBankName").value.trim();
-  st.bank.accountNo = document.getElementById("setAccountNo").value.trim();
-  st.bank.swiftCode = document.getElementById("setSwiftCode").value.trim();
+  st.bankByEntity = st.bankByEntity || {};
   EXPORTERS.forEach((e,i) => {
-    const v = document.getElementById("setExpAddr"+i).value.trim();
-    if(v) st.exporterAddresses[e] = v;
+    const addr = document.getElementById("setExpAddr"+i).value.trim();
+    if(addr) st.exporterAddresses[e] = addr;
+    st.bankByEntity[e] = {
+      bankBeneficiary: document.getElementById("setBen"+i).value.trim(),
+      bankName: document.getElementById("setBank"+i).value.trim(),
+      accountNo: document.getElementById("setAcct"+i).value.trim(),
+      swiftCode: document.getElementById("setSwift"+i).value.trim()
+    };
   });
+  const counter = parseInt(document.getElementById("setInvoiceCounter").value, 10);
+  if(!isNaN(counter) && counter > 0) st.invoiceCounter = counter;
   saveSettings(st);
-  toast("Company settings saved — documents will pre-fill from these");
+  toast("Shipper details saved — documents will pre-fill from these");
 }
 
 function importTargetChanged(){
@@ -1457,11 +1506,11 @@ function renderDetailView(s){
     ? `<span style="font-size:.72rem;background:#eef2f7;color:#6b7280;padding:3px 10px;border-radius:10px;vertical-align:middle;margin-left:8px;">Direct Export</span>`
     : `<span style="font-size:.72rem;background:#e6f4ea;color:#3f8f4f;padding:3px 10px;border-radius:10px;vertical-align:middle;margin-left:8px;">Via Saif Al Sahra (UAE)</span>`;
 
-  const navPills = applicable.map(st => {
+  const navPills = applicable.map((st, idx) => {
     const d = stages[st.key] || {};
     return `
       <div class="stage-pill ${st.key===currentStageKey?'active':''} ${d.done?'done':''}" onclick="App.selectStage('${st.key}')">
-        <div class="num" style="background:${st.color}">${st.num}</div>
+        <div class="num" style="background:${st.color}">${idx+1}</div>
         <div>
           <div class="name">${escapeHtml(st.short)}</div>
           <div class="status">${d.done ? '✓ Generated' : (st.optional ? 'Optional' : 'Pending')}</div>
@@ -1615,11 +1664,14 @@ function quickAddConsigneeSubmit(ref){
 
 function smartDefault(f, s, header){
   const settings = getSettings();
-  if(f.name === "invoiceNo") return s.ref;
-  if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.ref;
+  if(f.name === "invoiceNo") return s.invoiceNo || s.ref;
+  if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.invoiceNo || s.ref;
   if(["invoiceDate","packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
   if(f.name === "validityDate"){ const d = new Date(); d.setDate(d.getDate()+30); return d.toISOString().slice(0,10); }
-  if(["bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)) return (settings.bank||{})[f.name] || "";
+  if(["bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)){
+    const perEntity = (settings.bankByEntity||{})[header.exporterEntity] || {};
+    return perEntity[f.name] || (settings.bank||{})[f.name] || "";
+  }
   if(f.name === "shipperName") return header.exporterEntity || "";
   return f.default || "";
 }
@@ -1645,9 +1697,13 @@ function renderStagePage(s, stageKey){
     if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
   });
   const savedDoc = (s.documents && s.documents[stageKey]) || {};
+  if(!s.invoiceNo){
+    s.invoiceNo = nextInvoiceNo();
+    localUpdate(s.id, { invoiceNo: s.invoiceNo });
+  }
   modalItemRows = (savedDoc.items && savedDoc.items.length ? savedDoc.items : s.items) || [emptyItem()];
   modalItemRows = modalItemRows.map(it => ({...it}));
-  packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems || [emptyPackingItem()]));
+  packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems && s.packingItems.length ? s.packingItems : derivePackingFromItems(s)));
   packingItemRows = packingItemRows.map(it => ({...it}));
   pendingUploadFile = null;
 
@@ -1686,7 +1742,7 @@ function renderStagePage(s, stageKey){
 
   return `
     <div class="page-card">
-      <h2>${stage.num}. ${stage.label}</h2>
+      <h2>${stageIdx+1}. ${stage.label}</h2>
       <div class="page-sub">${escapeHtml(s.ref)}${s.customer ? ' — ' + escapeHtml(s.customer) : ''}</div>
 
       <div class="section-title">Shipment Details</div>
