@@ -251,17 +251,22 @@ function rememberReusables(headerData, extraData){
   if(headerData.exporterEntity && headerData.exporterAddress){
     st.exporterAddresses[headerData.exporterEntity] = headerData.exporterAddress;
   }
+  if(extraData.issuerEntity && extraData.issuerAddress){
+    st.exporterAddresses[extraData.issuerEntity] = extraData.issuerAddress;
+  }
   // remember last-used values for fields that repeat across shipments (final destination intentionally NOT remembered)
   ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading","consignee"].forEach(k => {
     if(headerData[k]) st.lastHeader[k] = headerData[k];
   });
+  // bank details belong to whichever entity issued THIS document — Saif Al Sahra for s10/s11, otherwise the shipment's shipper
+  const bankEntity = extraData.issuerEntity || headerData.exporterEntity;
   ["bankBeneficiary","bankName","accountNo","swiftCode"].forEach(k => {
     if(extraData[k]){
       st.bank[k] = extraData[k];
-      if(headerData.exporterEntity){
+      if(bankEntity){
         st.bankByEntity = st.bankByEntity || {};
-        st.bankByEntity[headerData.exporterEntity] = st.bankByEntity[headerData.exporterEntity] || {};
-        st.bankByEntity[headerData.exporterEntity][k] = extraData[k];
+        st.bankByEntity[bankEntity] = st.bankByEntity[bankEntity] || {};
+        st.bankByEntity[bankEntity][k] = extraData[k];
       }
     }
   });
@@ -351,9 +356,11 @@ function whatsappReminder(consigneeId){
 }
 
 const EXPORTERS = ["Royal Plastics & Household", "Babji Traders", "Babji Manufacturing"];
+const SAIF_ENTITY = "Saif Al Sahra Trading LLC";
+const SETTINGS_ENTITIES = [...EXPORTERS, SAIF_ENTITY]; // shown in Data tab so Saif Al Sahra also gets its own address+bank block
 
 const HEADER_FIELDS = [
-  { name:"exporterEntity", label:"Shipper", type:"select", options:EXPORTERS, default:EXPORTERS[0] },
+  { name:"exporterEntity", label:"Shipper", type:"select", options:SETTINGS_ENTITIES, default:EXPORTERS[0] },
   { name:"exporterAddress", label:"Shipper Address", type:"text" },
   { name:"buyerAddress", label:"Buyer Address", type:"text" },
   { name:"consignee", label:"Consignee (if different)", type:"text" },
@@ -411,40 +418,38 @@ const STAGES = [
       {name:"contractDate",label:"Contract Date",type:"date"},
       {name:"termsText",label:"Terms & Conditions",type:"textarea"},
     ]},
-  { key:"s8", num:8, label:"B/L Draft", short:"B/L Draft", color:"var(--purple)", hasItems:true,
-    extraFields:[
-      {name:"blNo",label:"B/L No",type:"text"},
-      {name:"blDate",label:"B/L Date",type:"date"},
-      {name:"shipperName",label:"Shipper Name",type:"text"},
-      {name:"vessel",label:"Vessel",type:"text"},
-      {name:"voyageNo",label:"Voyage No",type:"text"},
-      {name:"containerNos",label:"Container No(s)",type:"text"},
-      {name:"freightTerms",label:"Freight Terms",type:"select",options:["Prepaid","Collect"]},
-      {name:"placeOfIssue",label:"Place of Issue",type:"text"},
-    ]},
-  { key:"s9", num:9, label:"Certificate of Origin", short:"Certificate of Origin", color:"var(--teal)", hasItems:true,
-    extraFields:[
-      {name:"certNo",label:"Certificate No",type:"text"},
-      {name:"certDate",label:"Certificate Date",type:"date"},
-      {name:"countryOfOrigin",label:"Country of Origin",type:"text",default:"Pakistan"},
-      {name:"issuingAuthority",label:"Issuing Authority",type:"text"},
-    ]},
   { key:"s10", num:10, label:"Proforma Invoice (Saif Al Sahra)", short:"Proforma (Saif Al Sahra)", color:"var(--teal)", hasItems:true,
     extraFields:[
+      {name:"issuerEntity",label:"Issued By (Shipper)",type:"text",default:SAIF_ENTITY},
+      {name:"issuerAddress",label:"Issuer Address",type:"text"},
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"validityDate",label:"Validity Date",type:"date"},
-      {name:"buyerOverride",label:"Buyer Name",type:"text",default:"Saif Al Sahra"},
+      {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
+      {name:"bankBeneficiary",label:"Bank Beneficiary",type:"text"},
+      {name:"bankName",label:"Bank Name",type:"text"},
+      {name:"accountNo",label:"Account No / IBAN",type:"text"},
+      {name:"swiftCode",label:"SWIFT Code",type:"text"},
     ]},
   { key:"s11", num:11, label:"Tax Invoice (Saif Al Sahra)", short:"Tax Invoice (Saif Al Sahra)", color:"var(--blue)", hasItems:true,
     extraFields:[
+      {name:"issuerEntity",label:"Issued By (Shipper)",type:"text",default:SAIF_ENTITY},
+      {name:"issuerAddress",label:"Issuer Address",type:"text"},
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
-      {name:"buyerOverride",label:"Buyer Name",type:"text",default:"Saif Al Sahra"},
+      {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
       {name:"ntn",label:"NTN",type:"text"},
       {name:"salesTaxNo",label:"Sales Tax Reg No",type:"text"},
       {name:"taxRate",label:"Tax Rate (%)",type:"text"},
+      {name:"bankBeneficiary",label:"Bank Beneficiary",type:"text"},
+      {name:"bankName",label:"Bank Name",type:"text"},
+      {name:"accountNo",label:"Account No / IBAN",type:"text"},
+      {name:"swiftCode",label:"SWIFT Code",type:"text"},
     ]},
+  { key:"s12", num:12, label:"B/L Copy", short:"B/L Copy", color:"var(--purple)", hasItems:false, fileUpload:true,
+    extraFields:[]},
+  { key:"s13", num:13, label:"Certificate of Origin Copy", short:"CO Copy", color:"var(--teal)", hasItems:false, fileUpload:true,
+    extraFields:[]},
 ];
 
 let shipments = [];
@@ -491,12 +496,18 @@ function stagesForShipment(s){
   return [s10, ...STAGES.filter(st => st.key !== "s10")];
 }
 // Sequential invoice numbers, shared across the whole app. Starting number adjustable in Company Settings.
+function incrementTrailingNumber(str){
+  const m = String(str||"").match(/^(.*?)(\d+)(\s*)$/);
+  if(!m) return str; // no trailing digits found — can't auto-increment, return unchanged
+  const nextNum = String(Number(m[2]) + 1).padStart(m[2].length, "0");
+  return m[1] + nextNum + m[3];
+}
 function nextInvoiceNo(){
   const st = getSettings();
-  const n = st.invoiceCounter || 1;
-  st.invoiceCounter = n + 1;
+  const current = st.invoiceNext || (st.invoiceCounter ? String(st.invoiceCounter) : "1");
+  st.invoiceNext = incrementTrailingNumber(current);
   saveSettings(st);
-  return String(n);
+  return current;
 }
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
 function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", cbmPerCarton:"" }; }
@@ -689,9 +700,9 @@ function renderListView(){
       <h2>New Shipment</h2>
       <div class="add-row">
         <input id="newRef" type="text" value="${escapeHtml(nextRefSuggestion())}" placeholder="Shipment / Invoice Ref (e.g. EXP-2026-014)">
-        <input id="newCustomer" type="text" list="consigneeNames" placeholder="Customer — pick from Consignees list" autocomplete="off">
+        <input id="newCustomer" type="text" list="consigneeNames" placeholder="Customer — the real end buyer, not Saif Al Sahra" autocomplete="off">
         <datalist id="consigneeNames">
-          ${consignees.map(c => `<option value="${escapeHtml(c.name)}">`).join("")}
+          ${consignees.filter(c => !c.name.toLowerCase().includes("saif al sahr")).map(c => `<option value="${escapeHtml(c.name)}">`).join("")}
         </datalist>
         <select id="newRouting" style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">
           <option value="uae">Via Saif Al Sahra (UAE) — 11 documents</option>
@@ -699,7 +710,7 @@ function renderListView(){
         </select>
         <button id="addBtn" onclick="App.addShipment()">Add Shipment</button>
       </div>
-      ${consignees.length === 0 ? `<div style="font-size:.78rem;color:var(--muted);margin-top:8px;">Tip: add your customers on the 👥 Consignees tab first — then they appear in the customer dropdown here and their address auto-fills on documents.</div>` : ""}
+      <div style="font-size:.78rem;color:var(--muted);margin-top:8px;">Customer = the real paying buyer (used for the receivable ledger and the Saif Al Sahra invoice). For UAE-routed shipments, Saif Al Sahra is the redistributor, not the customer — it's set automatically as the Consignee, so don't enter it here.${consignees.length === 0 ? ' Add your customers on the 👥 Consignees tab first.' : ''}</div>
     </div>
     <div class="search">
       <input id="searchBox" type="text" placeholder="Search by reference or customer..." oninput="App.render()">
@@ -714,6 +725,9 @@ function addShipment(){
   const ref = refEl.value.trim();
   const customer = custEl.value.trim();
   if(!ref){ toast("Enter a shipment reference", true); return; }
+  if(customer.toLowerCase().includes("saif al sahr")){
+    if(!confirm('Customer is set to Saif Al Sahra — but that\'s the UAE redistributor, not the paying buyer. Enter the real end customer instead?\n\nClick Cancel to fix it, or OK to continue anyway.')) return;
+  }
   try{
     const header = {};
     HEADER_FIELDS.forEach(f => header[f.name] = f.default || "");
@@ -735,6 +749,7 @@ function addShipment(){
     if(routingEl.value === "uae"){
       header.finalDestination = header.finalDestination || "UAE";
       header.consignee = header.consignee || "Saif Al Sahra";
+      header.portOfDischarge = header.portOfDischarge || "Jebel Ali, UAE";
     } else {
       header.consignee = header.consignee || customer;
     }
@@ -766,11 +781,8 @@ function deleteShipment(shipId, ref){
 // Suggest the next reference by incrementing the trailing number of the most recent ref
 function nextRefSuggestion(){
   if(shipments.length === 0) return "";
-  const lastRef = shipments[0].ref || "";
-  const m = lastRef.match(/^(.*?)(\d+)\s*$/);
-  if(!m) return "";
-  const nextNum = String(Number(m[2]) + 1).padStart(m[2].length, "0");
-  return m[1] + nextNum;
+  const suggestion = incrementTrailingNumber(shipments[0].ref || "");
+  return suggestion === (shipments[0].ref || "") ? "" : suggestion;
 }
 
 function duplicateShipment(shipId){
@@ -806,6 +818,18 @@ function openShipment(shipId){
   renderApp();
 }
 function backToList(){ view = "list"; currentShipId = null; quickFormOpen = null; renderApp(); }
+
+function editShipmentCustomer(shipId){
+  const s = shipments.find(x => x.id === shipId);
+  if(!s) return;
+  const newName = prompt("Customer (real end buyer) name:", s.customer || "");
+  if(newName === null) return;
+  const trimmed = newName.trim();
+  const matched = consignees.find(c => c.name.toLowerCase() === trimmed.toLowerCase());
+  localUpdate(shipId, { customer: trimmed, consigneeId: matched ? matched.id : null });
+  toast("Customer updated");
+  refreshFromStorage();
+}
 
 // ================= EXPENSES: PROVIDER LIST =================
 function renderExpensesView(){
@@ -1140,7 +1164,7 @@ function renderDataView(){
   return `
     <div class="add-card">
       <h2>🏢 Shipper Details — filled once, used on every document</h2>
-      ${EXPORTERS.map((e,i) => {
+      ${SETTINGS_ENTITIES.map((e,i) => {
         const st = getSettings();
         const addr = (st.exporterAddresses||{})[e] || "";
         const bank = (st.bankByEntity||{})[e] || st.bank || {};
@@ -1156,7 +1180,7 @@ function renderDataView(){
       }).join("")}
       <div class="section-title">Invoice Numbering</div>
       <div class="field-grid">
-        <div class="field"><label>Next Invoice No (auto-assigned to each new shipment)</label><input id="setInvoiceCounter" type="text" inputmode="numeric" pattern="[0-9]*" value="${escapeHtml(String(getSettings().invoiceCounter||1))}"></div>
+        <div class="field"><label>Next Invoice No (auto-assigned to each new shipment — letters/prefix OK, e.g. "BT 5017")</label><input id="setInvoiceCounter" type="text" value="${escapeHtml(getSettings().invoiceNext || String(getSettings().invoiceCounter||1))}"></div>
       </div>
       <div class="page-actions" style="border-top:none;padding-top:0;margin-top:14px;">
         <div></div>
@@ -1203,7 +1227,7 @@ function saveCompanySettings(){
   const st = getSettings();
   st.exporterAddresses = st.exporterAddresses || {};
   st.bankByEntity = st.bankByEntity || {};
-  EXPORTERS.forEach((e,i) => {
+  SETTINGS_ENTITIES.forEach((e,i) => {
     const addr = document.getElementById("setExpAddr"+i).value.trim();
     if(addr) st.exporterAddresses[e] = addr;
     st.bankByEntity[e] = {
@@ -1213,8 +1237,8 @@ function saveCompanySettings(){
       swiftCode: document.getElementById("setSwift"+i).value.trim()
     };
   });
-  const counter = parseInt(document.getElementById("setInvoiceCounter").value, 10);
-  if(!isNaN(counter) && counter > 0) st.invoiceCounter = counter;
+  const invoiceText = document.getElementById("setInvoiceCounter").value.trim();
+  if(invoiceText){ st.invoiceNext = invoiceText; delete st.invoiceCounter; }
   saveSettings(st);
   toast("Shipper details saved — documents will pre-fill from these");
 }
@@ -1523,7 +1547,7 @@ function renderDetailView(s){
     <div class="detail-head">
       <div>
         <div class="ref">${escapeHtml(s.ref)}${routeBadge}</div>
-        <div class="cust">${escapeHtml(s.customer||'')}</div>
+        <div class="cust">${escapeHtml(s.customer||'')} <button style="border:none;background:none;color:var(--navy);cursor:pointer;font-size:.78rem;text-decoration:underline;" onclick="App.editShipmentCustomer('${s.id}')">edit</button></div>
       </div>
       <div class="detail-progress">
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -1662,14 +1686,19 @@ function quickAddConsigneeSubmit(ref){
   refreshFromStorage();
 }
 
-function smartDefault(f, s, header){
+function smartDefault(f, s, header, stage){
   const settings = getSettings();
   if(f.name === "invoiceNo") return s.invoiceNo || s.ref;
   if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.invoiceNo || s.ref;
   if(["invoiceDate","packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
   if(f.name === "validityDate"){ const d = new Date(); d.setDate(d.getDate()+30); return d.toISOString().slice(0,10); }
+  if(f.name === "issuerAddress") return (settings.exporterAddresses||{})[SAIF_ENTITY] || "";
+  if(f.name === "buyerOverride") return s.customer || "";
   if(["bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)){
-    const perEntity = (settings.bankByEntity||{})[header.exporterEntity] || {};
+    // Saif Al Sahra documents (s10/s11) use Saif Al Sahra's own bank; other stages use the shipment's shipper entity
+    const isSaifDoc = stage && stage.extraFields.some(x => x.name === "issuerEntity");
+    const entity = isSaifDoc ? SAIF_ENTITY : header.exporterEntity;
+    const perEntity = (settings.bankByEntity||{})[entity] || {};
     return perEntity[f.name] || (settings.bank||{})[f.name] || "";
   }
   if(f.name === "shipperName") return header.exporterEntity || "";
@@ -1693,6 +1722,9 @@ function renderStagePage(s, stageKey){
   if(!header.consignee){
     header.consignee = s.routing === "direct" ? (s.customer || "") : "Saif Al Sahra";
   }
+  if(!header.portOfDischarge && s.routing !== "direct"){
+    header.portOfDischarge = "Jebel Ali, UAE";
+  }
   ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
     if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
   });
@@ -1707,11 +1739,20 @@ function renderStagePage(s, stageKey){
   packingItemRows = packingItemRows.map(it => ({...it}));
   pendingUploadFile = null;
 
-  const headerFieldsHtml = HEADER_FIELDS.map(f => `
+  const isSaifDoc = stage.extraFields.some(f => f.name === "issuerEntity");
+  const headerFieldsHtml = HEADER_FIELDS
+    .filter(f => !(isSaifDoc && (f.name === "exporterEntity" || f.name === "exporterAddress" || f.name === "buyerAddress")))
+    .map(f => `
     <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
+  const saifNote = isSaifDoc ? `<div style="font-size:.78rem;color:var(--muted);margin:-4px 0 14px;">This document is issued by Saif Al Sahra — see "Issued By" below. (The manufacturing Shipper above doesn't apply here and isn't shown.)</div>` : "";
   const extraFieldsHtml = stage.extraFields.map(f => {
-    const val = savedDoc[f.name] != null && savedDoc[f.name] !== "" ? savedDoc[f.name] : smartDefault(f, s, header);
-    return `<div class="field"><label>${f.label}</label>${fieldInput(f, val)}</div>`;
+    const val = savedDoc[f.name] != null && savedDoc[f.name] !== "" ? savedDoc[f.name] : smartDefault(f, s, header, stage);
+    let html = `<div class="field"><label>${f.label}</label>${fieldInput(f, val)}</div>`;
+    if(isSaifDoc && f.name === "buyerOverride"){
+      // Buyer Address sits right next to Buyer Name here (still saved into the shared header, via data-headerfield)
+      html += `<div class="field"><label>Buyer Address</label><input type="text" data-headerfield="buyerAddress" value="${escapeHtml(header.buyerAddress||'')}"></div>`;
+    }
+    return html;
   }).join("");
 
   let itemsBlock = "";
@@ -1730,10 +1771,10 @@ function renderStagePage(s, stageKey){
         <button class="btn-save" style="margin-left:10px;padding:5px 12px;" onclick="App.downloadStageFile('${stageKey}')">Download</button>
       </div>` : `<div style="margin-bottom:10px;font-size:.84rem;color:var(--muted);">No file uploaded yet.</div>`;
     itemsBlock = `
-    <div class="section-title">Loading Sheet File (Excel)</div>
+    <div class="section-title">${escapeHtml(stage.label)} File</div>
     ${existing}
-    <input type="file" id="stageFileInput" accept=".xlsx,.xls,.csv" onchange="App.stageFileSelected(this)" style="font-size:.85rem;">
-    <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">Upload the loading sheet prepared in Excel. It will be stored with this shipment.</div>`;
+    <input type="file" id="stageFileInput" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv" onchange="App.stageFileSelected(this)" style="font-size:.85rem;">
+    <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">Upload the ${escapeHtml(stage.label.toLowerCase())} (scanned PDF, photo, or Excel/CSV). It will be stored with this shipment.</div>`;
   }
 
   const applicable = stagesForShipment(s);
@@ -1746,6 +1787,7 @@ function renderStagePage(s, stageKey){
       <div class="page-sub">${escapeHtml(s.ref)}${s.customer ? ' — ' + escapeHtml(s.customer) : ''}</div>
 
       <div class="section-title">Shipment Details</div>
+      ${saifNote}
       <div class="field-grid" id="headerFields">${headerFieldsHtml}</div>
 
       ${stage.extraFields.length ? `
@@ -1774,12 +1816,27 @@ function fieldInput(f, value){
   const val = value != null && value !== "" ? value : (f.default || "");
   if(f.type === "select"){
     const opts = f.options.map(o => `<option value="${escapeHtml(o)}" ${o===val?'selected':''}>${escapeHtml(o)}</option>`).join("");
-    return `<select data-field="${f.name}">${opts}</select>`;
+    const onchange = f.name === "exporterEntity" ? ` onchange="App.shipperChanged(this.value)"` : "";
+    return `<select data-field="${f.name}"${onchange}>${opts}</select>`;
   }
   if(f.type === "textarea"){
     return `<textarea data-field="${f.name}">${escapeHtml(val)}</textarea>`;
   }
   return `<input type="${f.type}" data-field="${f.name}" value="${escapeHtml(val)}">`;
+}
+
+// When the shipper is switched on a document, reload its address + bank details from settings
+function shipperChanged(entity){
+  const st = getSettings();
+  const addrEl = document.querySelector('#headerFields [data-field="exporterAddress"]');
+  if(addrEl) addrEl.value = (st.exporterAddresses||{})[entity] || "";
+  const bank = (st.bankByEntity||{})[entity] || st.bank || {};
+  ["bankBeneficiary","bankName","accountNo","swiftCode"].forEach(k => {
+    const el = document.querySelector('#extraFields [data-field="'+k+'"]');
+    if(el) el.value = bank[k] || "";
+  });
+  const shipperEl = document.querySelector('#extraFields [data-field="shipperName"]');
+  if(shipperEl) shipperEl.value = entity;
 }
 
 function renderItemsEditor(){
@@ -1935,7 +1992,7 @@ function downloadStageFile(stageKey){
   if(!savedDoc || !savedDoc.fileDataUrl){ toast("No file stored", true); return; }
   const a = document.createElement("a");
   a.href = savedDoc.fileDataUrl;
-  a.download = savedDoc.fileName || "loading-sheet.xlsx";
+  a.download = savedDoc.fileName || "uploaded-document";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -1953,6 +2010,14 @@ function saveStageData(shouldPrint, goToStageKey){
 
   const headerData = {};
   document.querySelectorAll('#headerFields [data-field]').forEach(el => headerData[el.dataset.field] = el.value);
+  // Saif Al Sahra documents (s10/s11) don't show the shared Shipper fields — carry the existing values
+  // forward so saving here doesn't wipe them out for the rest of the shipment's documents.
+  if(!("exporterEntity" in headerData) && s.header){
+    headerData.exporterEntity = s.header.exporterEntity || "";
+    headerData.exporterAddress = s.header.exporterAddress || "";
+  }
+  // Fields rendered outside #headerFields (e.g. Buyer Address paired next to Buyer Name) still belong to the shared header
+  document.querySelectorAll('[data-headerfield]').forEach(el => headerData[el.dataset.headerfield] = el.value);
   const extraData = {};
   if(document.getElementById("extraFields")){
     document.querySelectorAll('#extraFields [data-field]').forEach(el => extraData[el.dataset.field] = el.value);
@@ -1974,7 +2039,7 @@ function saveStageData(shouldPrint, goToStageKey){
         docData.fileName = prevDoc.fileName;
         docData.fileDataUrl = prevDoc.fileDataUrl;
       } else {
-        toast("Upload the Excel loading sheet before saving", true);
+        toast(`Upload the ${stage.label.toLowerCase()} file before saving`, true);
         return;
       }
     } else {
@@ -2062,12 +2127,26 @@ function printDocument(stage, header, docData, ref, customer){
     </table>` : "";
 
   const extraRows = stage.extraFields.map(f => {
+    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)) return ""; // shown elsewhere (meta / bank block)
     const v = docData[f.name];
     if(!v) return "";
     return `<div class="doc-field"><span>${f.label}</span><b>${escapeHtml(v)}</b></div>`;
   }).join("");
 
   const buyerName = docData.buyerOverride || customer || "";
+  const letterheadCompany = docData.issuerEntity || header.exporterEntity || "";
+  const letterheadAddress = docData.issuerAddress || header.exporterAddress || "";
+
+  const bankFieldDefs = [
+    {name:"bankBeneficiary", label:"Beneficiary"},
+    {name:"bankName", label:"Bank Name"},
+    {name:"accountNo", label:"Account No / IBAN"},
+    {name:"swiftCode", label:"SWIFT Code"},
+  ];
+  const bankRows = bankFieldDefs.map(f => docData[f.name] ? `<div class="doc-field"><span>${f.label}:</span><b>${escapeHtml(docData[f.name])}</b></div>` : "").join("");
+  const bankBlock = bankRows ? `
+    <div class="section-label">Bank Details</div>
+    <div class="doc-fields">${bankRows}</div>` : "";
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escapeHtml(stage.label)} - ${escapeHtml(ref)}</title>
   <style>
@@ -2077,12 +2156,16 @@ function printDocument(stage, header, docData, ref, customer){
     .doc-header .company{font-weight:700;font-size:1.05rem;}
     .doc-header .addr{font-size:.8rem;color:#555;max-width:280px;}
     .doc-meta{display:flex;justify-content:space-between;margin-bottom:18px;font-size:.85rem;}
+    .doc-meta .invno{margin-top:4px;}
     .parties{display:flex;gap:24px;margin-bottom:18px;}
     .party{flex:1;font-size:.85rem;}
     .party h4{margin:0 0 4px;color:#0d2b52;font-size:.78rem;text-transform:uppercase;letter-spacing:.5px;}
+    .party .addr-line{color:#555;margin-top:2px;}
+    .party .addr-missing{color:#999;font-style:italic;margin-top:2px;}
     .doc-fields{display:flex;flex-wrap:wrap;gap:10px 26px;margin-bottom:18px;}
     .doc-field{font-size:.85rem;display:flex;gap:6px;}
     .doc-field span{color:#666;}
+    .section-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;color:#888;font-weight:700;margin:18px 0 8px;border-top:1px solid #ddd;padding-top:12px;}
     table.doc-items{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:.85rem;}
     table.doc-items th{background:#0d2b52;color:#fff;padding:8px;text-align:left;}
     table.doc-items td{padding:7px 8px;border-bottom:1px solid #ddd;}
@@ -2093,17 +2176,20 @@ function printDocument(stage, header, docData, ref, customer){
   <body>
     <div class="doc-header">
       <div>
-        <div class="company">${escapeHtml(header.exporterEntity||'')}</div>
-        <div class="addr">${escapeHtml(header.exporterAddress||'')}</div>
+        <div class="company">${escapeHtml(letterheadCompany)}</div>
+        <div class="addr">${escapeHtml(letterheadAddress)}</div>
       </div>
       <div><h1>${escapeHtml(stage.label)}</h1></div>
     </div>
     <div class="doc-meta">
-      <div><b>Ref:</b> ${escapeHtml(ref)}</div>
+      <div>
+        <div><b>Ref:</b> ${escapeHtml(ref)}</div>
+        ${docData.invoiceNo ? `<div class="invno"><b>Invoice No:</b> ${escapeHtml(docData.invoiceNo)}</div>` : ""}
+      </div>
       <div><b>Date:</b> ${escapeHtml(docData.invoiceDate||docData.contractDate||docData.blDate||docData.certDate||docData.loadingDate||docData.packingDate||'')}</div>
     </div>
     <div class="parties">
-      <div class="party"><h4>Buyer</h4>${escapeHtml(buyerName)}<br>${escapeHtml(header.buyerAddress||'')}</div>
+      <div class="party"><h4>Buyer</h4><div>${escapeHtml(buyerName)}</div>${header.buyerAddress ? `<div class="addr-line">${escapeHtml(header.buyerAddress)}</div>` : `<div class="addr-missing">No address on file</div>`}</div>
       <div class="party"><h4>Consignee</h4>${escapeHtml(header.consignee||buyerName)}</div>
       <div class="party"><h4>Notify Party</h4>${escapeHtml(header.notifyParty||'')}</div>
     </div>
@@ -2111,15 +2197,19 @@ function printDocument(stage, header, docData, ref, customer){
       <div class="doc-field"><span>Port of Loading:</span><b>${escapeHtml(header.portOfLoading||'')}</b></div>
       <div class="doc-field"><span>Port of Discharge:</span><b>${escapeHtml(header.portOfDischarge||'')}</b></div>
       <div class="doc-field"><span>Final Destination:</span><b>${escapeHtml(header.finalDestination||'')}</b></div>
-      <div class="doc-field"><span>Incoterm:</span><b>${escapeHtml(header.incoterm||'')}</b></div>
-      <div class="doc-field"><span>Payment Terms:</span><b>${escapeHtml(header.paymentTerms||'')}</b></div>
       ${extraRows}
     </div>
     ${itemsTable}
+    <div class="section-label">Terms</div>
+    <div class="doc-fields">
+      <div class="doc-field"><span>Incoterm:</span><b>${escapeHtml(header.incoterm||'')}</b></div>
+      <div class="doc-field"><span>Payment Terms:</span><b>${escapeHtml(header.paymentTerms||'')}</b></div>
+    </div>
     <div class="signatures">
       <div class="sig">Prepared By</div>
       <div class="sig">Authorized Signatory</div>
     </div>
+    ${bankBlock}
   </body></html>`;
 
   const w = window.open("", "_blank");
@@ -2224,11 +2314,11 @@ window.App = {
   saveStageData, addItemRow, removeItemRow, render: renderApp,
   addPackingItemRow, removePackingItemRow, packingRecalc,
   stageFileSelected, downloadStageFile,
-  duplicateShipment,
+  duplicateShipment, editShipmentCustomer,
   showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab, showCatalogTab, showDataTab,
   addCatalogItem, removeCatalogItem, packingCatalogFill, itemCatalogFill,
   importTargetChanged, importFileSelected, runImport, saveCompanySettings,
-  downloadBackup, restoreBackup, exportLedgerExcel, whatsappReminder,
+  downloadBackup, restoreBackup, exportLedgerExcel, whatsappReminder, shipperChanged,
   addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
   addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn,
   openQuickExpenseForm, openQuickConsigneeForm, closeQuickForms, quickAddExpenseSubmit, quickAddConsigneeSubmit
