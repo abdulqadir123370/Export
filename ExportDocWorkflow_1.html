@@ -294,7 +294,7 @@ function upsertCatalogItem(data){
   const idx = arr.findIndex(c => c.description.toLowerCase() === data.description.toLowerCase());
   if(idx >= 0){
     // update non-empty fields only
-    ["hsCode","uom","unitPacked","cbmPerCarton","unitPrice"].forEach(k => {
+    ["hsCode","uom","unitPacked","lengthCm","widthCm","heightCm","netWeightPerCtn","grossWeightPerCtn","unitPrice"].forEach(k => {
       if(data[k]) arr[idx][k] = data[k];
     });
   } else {
@@ -304,7 +304,11 @@ function upsertCatalogItem(data){
       hsCode: data.hsCode || "96039000",
       uom: data.uom || "Pcs",
       unitPacked: data.unitPacked || "",
-      cbmPerCarton: data.cbmPerCarton || "",
+      lengthCm: data.lengthCm || "",
+      widthCm: data.widthCm || "",
+      heightCm: data.heightCm || "",
+      netWeightPerCtn: data.netWeightPerCtn || "",
+      grossWeightPerCtn: data.grossWeightPerCtn || "",
       unitPrice: data.unitPrice || ""
     });
   }
@@ -388,7 +392,6 @@ const STAGES = [
     extraFields:[
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
-      {name:"validityDate",label:"Validity Date",type:"date"},
       ...BANK_FIELDS,
     ]},
   { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:false, fileUpload:true,
@@ -431,7 +434,6 @@ const STAGES = [
       {name:"issuerAddress",label:"Issuer Address",type:"text"},
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
-      {name:"validityDate",label:"Validity Date",type:"date"},
       {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
       ...BANK_FIELDS,
     ]},
@@ -521,7 +523,7 @@ function nextInvoiceNo(){
   return current;
 }
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
-function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", cbmPerCarton:"" }; }
+function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", lengthCm:"", widthCm:"", heightCm:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
 // Build packing list rows from the invoice items + catalog knowledge, so nothing is typed twice
 function derivePackingFromItems(s){
   const src = (s.items || []).filter(it => (it.description||"").trim());
@@ -539,7 +541,11 @@ function derivePackingFromItems(s){
       unitPacked,
       packingType: "Carton",
       totalPacked,
-      cbmPerCarton: cat.cbmPerCarton || ""
+      lengthCm: cat.lengthCm || "",
+      widthCm: cat.widthCm || "",
+      heightCm: cat.heightCm || "",
+      netWeightPerCtn: cat.netWeightPerCtn || "",
+      grossWeightPerCtn: cat.grossWeightPerCtn || ""
     };
   });
 }
@@ -1052,33 +1058,39 @@ function renderCatalogView(){
   const items = listCatalog();
   const rows = items.length === 0
     ? `<div class="empty">No items yet. Add products below, or they'll be learned automatically when you save a packing list or invoice.</div>`
-    : `<table class="ledger-table">
-        <thead><tr><th>Description</th><th>HS Code</th><th>UOM</th><th>Units / Carton</th><th>CBM / Carton</th><th>Unit Price</th><th></th></tr></thead>
+    : `<div style="overflow-x:auto;"><table class="ledger-table">
+        <thead><tr><th>Description</th><th>HS Code</th><th>UOM</th><th>Units/Ctn</th><th>L×W×H (cm)</th><th>Net/Ctn (kg)</th><th>Gross/Ctn (kg)</th><th>Unit Price</th><th></th></tr></thead>
         <tbody>${items.map(c => `
           <tr>
             <td>${escapeHtml(c.description)}</td>
             <td>${escapeHtml(c.hsCode)}</td>
             <td>${escapeHtml(c.uom)}</td>
             <td>${escapeHtml(c.unitPacked)}</td>
-            <td>${escapeHtml(c.cbmPerCarton)}</td>
+            <td>${(c.lengthCm||c.widthCm||c.heightCm) ? `${escapeHtml(c.lengthCm)}×${escapeHtml(c.widthCm)}×${escapeHtml(c.heightCm)}` : ''}</td>
+            <td>${escapeHtml(c.netWeightPerCtn)}</td>
+            <td>${escapeHtml(c.grossWeightPerCtn)}</td>
             <td>${escapeHtml(c.unitPrice)}</td>
             <td><button class="del-btn" onclick="App.removeCatalogItem('${c.id}','${escapeHtml(c.description)}')">✕</button></td>
           </tr>`).join("")}</tbody>
-      </table>`;
+      </table></div>`;
 
   return `
     <div class="add-card">
       <h2>Add Product</h2>
       <div class="add-row" style="flex-wrap:wrap;">
-        <input id="catDesc" type="text" placeholder="Item Description (e.g. Standard Dust Mop 60 cm with Frame)" style="min-width:280px;">
-        <input id="catHs" type="text" placeholder="HS Code" value="96039000" style="max-width:120px;">
-        <input id="catUom" type="text" placeholder="UOM" value="Pcs" style="max-width:80px;">
-        <input id="catUnitPacked" type="text" placeholder="Units/Carton" style="max-width:110px;">
-        <input id="catCbm" type="text" placeholder="CBM/Carton" style="max-width:110px;">
-        <input id="catPrice" type="text" placeholder="Unit Price" style="max-width:100px;">
+        <input id="catDesc" type="text" placeholder="Item Description (e.g. Standard Dust Mop 60 cm with Frame)" style="min-width:260px;">
+        <input id="catHs" type="text" placeholder="HS Code" value="96039000" style="max-width:110px;">
+        <input id="catUom" type="text" placeholder="UOM" value="Pcs" style="max-width:70px;">
+        <input id="catUnitPacked" type="text" placeholder="Units/Carton" style="max-width:100px;">
+        <input id="catLength" type="text" placeholder="L cm" style="max-width:70px;">
+        <input id="catWidth" type="text" placeholder="W cm" style="max-width:70px;">
+        <input id="catHeight" type="text" placeholder="H cm" style="max-width:70px;">
+        <input id="catNetWt" type="text" placeholder="Net kg/Ctn" style="max-width:100px;">
+        <input id="catGrossWt" type="text" placeholder="Gross kg/Ctn" style="max-width:100px;">
+        <input id="catPrice" type="text" placeholder="Unit Price" style="max-width:90px;">
         <button onclick="App.addCatalogItem()">Add Item</button>
       </div>
-      <div style="font-size:.78rem;color:var(--muted);margin-top:8px;">These auto-fill packing list and invoice rows when you pick the item by name. The catalog also learns automatically from every packing list you save.</div>
+      <div style="font-size:.78rem;color:var(--muted);margin-top:8px;">These auto-fill packing list and invoice rows when you pick the item by name — CBM is calculated automatically from L×W×H. The catalog also learns automatically from every packing list you save.</div>
     </div>
     ${rows}`;
 }
@@ -1090,7 +1102,11 @@ function addCatalogItem(){
     hsCode: document.getElementById("catHs").value.trim(),
     uom: document.getElementById("catUom").value.trim(),
     unitPacked: document.getElementById("catUnitPacked").value.trim(),
-    cbmPerCarton: document.getElementById("catCbm").value.trim(),
+    lengthCm: document.getElementById("catLength").value.trim(),
+    widthCm: document.getElementById("catWidth").value.trim(),
+    heightCm: document.getElementById("catHeight").value.trim(),
+    netWeightPerCtn: document.getElementById("catNetWt").value.trim(),
+    grossWeightPerCtn: document.getElementById("catGrossWt").value.trim(),
     unitPrice: document.getElementById("catPrice").value.trim()
   });
   toast("Item saved");
@@ -1113,7 +1129,11 @@ function packingCatalogFill(i){
   if(cat.hsCode) row.hsCode = cat.hsCode;
   if(cat.uom) row.uom = cat.uom;
   if(cat.unitPacked) row.unitPacked = cat.unitPacked;
-  if(cat.cbmPerCarton) row.cbmPerCarton = cat.cbmPerCarton;
+  if(cat.lengthCm) row.lengthCm = cat.lengthCm;
+  if(cat.widthCm) row.widthCm = cat.widthCm;
+  if(cat.heightCm) row.heightCm = cat.heightCm;
+  if(cat.netWeightPerCtn) row.netWeightPerCtn = cat.netWeightPerCtn;
+  if(cat.grossWeightPerCtn) row.grossWeightPerCtn = cat.grossWeightPerCtn;
   document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
 }
 function itemCatalogFill(i){
@@ -1156,7 +1176,11 @@ function renderDataView(){
       <div class="field"><label>HS Code column</label><select id="mapHs">${headerOpts}</select></div>
       <div class="field"><label>UOM column</label><select id="mapUom">${headerOpts}</select></div>
       <div class="field"><label>Units/Carton column</label><select id="mapUnitPacked">${headerOpts}</select></div>
-      <div class="field"><label>CBM/Carton column</label><select id="mapCbm">${headerOpts}</select></div>
+      <div class="field"><label>Length (cm) column</label><select id="mapLength">${headerOpts}</select></div>
+      <div class="field"><label>Width (cm) column</label><select id="mapWidth">${headerOpts}</select></div>
+      <div class="field"><label>Height (cm) column</label><select id="mapHeight">${headerOpts}</select></div>
+      <div class="field"><label>Net Weight/Carton (kg) column</label><select id="mapNetWt">${headerOpts}</select></div>
+      <div class="field"><label>Gross Weight/Carton (kg) column</label><select id="mapGrossWt">${headerOpts}</select></div>
       <div class="field"><label>Unit Price column</label><select id="mapPrice">${headerOpts}</select></div>`;
 
     mappingBlock = `
@@ -1334,7 +1358,11 @@ function runImport(){
           hsCode: col("mapHs")!==null ? String(r[col("mapHs")]||"").trim() : "",
           uom: col("mapUom")!==null ? String(r[col("mapUom")]||"").trim() : "",
           unitPacked: col("mapUnitPacked")!==null ? String(r[col("mapUnitPacked")]||"").trim() : "",
-          cbmPerCarton: col("mapCbm")!==null ? String(r[col("mapCbm")]||"").trim() : "",
+          lengthCm: col("mapLength")!==null ? String(r[col("mapLength")]||"").trim() : "",
+          widthCm: col("mapWidth")!==null ? String(r[col("mapWidth")]||"").trim() : "",
+          heightCm: col("mapHeight")!==null ? String(r[col("mapHeight")]||"").trim() : "",
+          netWeightPerCtn: col("mapNetWt")!==null ? String(r[col("mapNetWt")]||"").trim() : "",
+          grossWeightPerCtn: col("mapGrossWt")!==null ? String(r[col("mapGrossWt")]||"").trim() : "",
           unitPrice: col("mapPrice")!==null ? String(r[col("mapPrice")]||"").trim() : ""
         });
         count++;
@@ -1705,8 +1733,7 @@ function smartDefault(f, s, header, stage){
   const settings = getSettings();
   if(f.name === "invoiceNo") return s.invoiceNo || s.ref;
   if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.invoiceNo || s.ref;
-  if(["invoiceDate","packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
-  if(f.name === "validityDate"){ const d = new Date(); d.setDate(d.getDate()+30); return d.toISOString().slice(0,10); }
+  if(["packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
   if(f.name === "issuerAddress") return (settings.exporterAddresses||{})[SAIF_ENTITY] || "";
   if(f.name === "buyerOverride") return s.customer || "";
   if(["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].includes(f.name)){
@@ -1898,20 +1925,31 @@ function renderPackingItemsEditor(){
   const rows = packingItemRows.map((it, i) => {
     const unitPacked = parseFloat(it.unitPacked)||0;
     const totalPacked = parseFloat(it.totalPacked)||0;
-    const cbmPer = parseFloat(it.cbmPerCarton)||0;
+    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
+    const cbmPerCtn = (L*W*H) / 1000000; // cm3 -> m3
+    const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const totalUOM = unitPacked * totalPacked;
-    const totalCBM = cbmPer * totalPacked;
+    const totalCBM = cbmPerCtn * totalPacked;
+    const totalNet = netPerCtn * totalPacked;
+    const totalGross = grossPerCtn * totalPacked;
     return `
     <tr>
-      <td><input data-pitem="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code" style="width:90px;"></td>
-      <td><input data-pitem="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description" list="catalogPackingNames" autocomplete="off" onchange="App.packingCatalogFill(${i})"></td>
-      <td><input data-pitem="uom" data-idx="${i}" value="${escapeHtml(it.uom)}" placeholder="UOM" style="width:55px;"></td>
-      <td><input data-pitem="unitPacked" data-idx="${i}" value="${escapeHtml(it.unitPacked)}" placeholder="Unit Packed" style="width:80px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="packingType" data-idx="${i}" value="${escapeHtml(it.packingType)}" placeholder="Packing" style="width:75px;"></td>
-      <td><input data-pitem="totalPacked" data-idx="${i}" value="${escapeHtml(it.totalPacked)}" placeholder="Cartons" style="width:75px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="cbmPerCarton" data-idx="${i}" value="${escapeHtml(it.cbmPerCarton)}" placeholder="CBM/Ctn" style="width:75px;" oninput="App.packingRecalc()"></td>
-      <td style="font-size:.8rem;text-align:right;white-space:nowrap;" data-calc-uom="${i}">${totalUOM ? totalUOM.toLocaleString() : ''}</td>
-      <td style="font-size:.8rem;text-align:right;white-space:nowrap;" data-calc-cbm="${i}">${totalCBM ? totalCBM.toFixed(2) : ''}</td>
+      <td><input data-pitem="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code" style="width:85px;"></td>
+      <td><input data-pitem="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description" list="catalogPackingNames" autocomplete="off" onchange="App.packingCatalogFill(${i})" style="min-width:150px;"></td>
+      <td><input data-pitem="uom" data-idx="${i}" value="${escapeHtml(it.uom)}" placeholder="UOM" style="width:50px;"></td>
+      <td><input data-pitem="unitPacked" data-idx="${i}" value="${escapeHtml(it.unitPacked)}" placeholder="Unit Packed" style="width:75px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="packingType" data-idx="${i}" value="${escapeHtml(it.packingType)}" placeholder="Packing" style="width:70px;"></td>
+      <td><input data-pitem="totalPacked" data-idx="${i}" value="${escapeHtml(it.totalPacked)}" placeholder="Cartons" style="width:65px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="lengthCm" data-idx="${i}" value="${escapeHtml(it.lengthCm)}" placeholder="L cm" style="width:60px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="widthCm" data-idx="${i}" value="${escapeHtml(it.widthCm)}" placeholder="W cm" style="width:60px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="heightCm" data-idx="${i}" value="${escapeHtml(it.heightCm)}" placeholder="H cm" style="width:60px;" oninput="App.packingRecalc()"></td>
+      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbmctn="${i}">${cbmPerCtn ? cbmPerCtn.toFixed(4) : ''}</td>
+      <td><input data-pitem="netWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.netWeightPerCtn)}" placeholder="Net kg" style="width:65px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="grossWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.grossWeightPerCtn)}" placeholder="Gross kg" style="width:70px;" oninput="App.packingRecalc()"></td>
+      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-uom="${i}">${totalUOM ? totalUOM.toLocaleString() : ''}</td>
+      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbm="${i}">${totalCBM ? totalCBM.toFixed(2) : ''}</td>
+      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-net="${i}">${totalNet ? totalNet.toFixed(1) : ''}</td>
+      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-gross="${i}">${totalGross ? totalGross.toFixed(1) : ''}</td>
       <td><button class="rm" onclick="App.removePackingItemRow(${i})">✕</button></td>
     </tr>`;
   }).join("");
@@ -1920,31 +1958,39 @@ function renderPackingItemsEditor(){
 
   return `
     <datalist id="catalogPackingNames">${catalogOptions}</datalist>
+    <div style="overflow-x:auto;">
     <table class="items-table">
-      <thead><tr><th>HS Code</th><th>Item Description</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Qty (Packed)</th><th>CBM / Carton</th><th>Total Qty (UOM)</th><th>Total CBM</th><th></th></tr></thead>
+      <thead><tr><th>HS Code</th><th>Item Description</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Cartons</th><th>L (cm)</th><th>W (cm)</th><th>H (cm)</th><th>CBM/Ctn</th><th>Net Wt/Ctn (kg)</th><th>Gross Wt/Ctn (kg)</th><th>Total Qty (UOM)</th><th>Total CBM</th><th>Total Net (kg)</th><th>Total Gross (kg)</th><th></th></tr></thead>
       <tbody id="packingTbody">${rows}</tbody>
       <tfoot><tr style="font-weight:700;background:#f1f4f8;">
         <td colspan="5" style="text-align:right;padding:7px 8px;">Totals</td>
         <td style="padding:7px 8px;" id="packingTotalPacked">${totals.packed.toLocaleString()}</td>
-        <td></td>
+        <td colspan="4"></td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalUOM">${totals.uom.toLocaleString()}</td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalCBM">${totals.cbm.toFixed(2)}</td>
+        <td style="text-align:right;padding:7px 8px;" id="packingTotalNet">${totals.net.toFixed(1)}</td>
+        <td style="text-align:right;padding:7px 8px;" id="packingTotalGross">${totals.gross.toFixed(1)}</td>
         <td></td>
       </tr></tfoot>
     </table>
+    </div>
     <button type="button" class="add-item-btn" onclick="App.addPackingItemRow()">+ Add Item</button>`;
 }
 function packingTotals(){
-  let packed=0, uom=0, cbm=0;
+  let packed=0, uom=0, cbm=0, net=0, gross=0;
   packingItemRows.forEach(it => {
     const up = parseFloat(it.unitPacked)||0;
     const tp = parseFloat(it.totalPacked)||0;
-    const cp = parseFloat(it.cbmPerCarton)||0;
+    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
+    const cbmPerCtn = (L*W*H) / 1000000;
+    const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     packed += tp;
     uom += up*tp;
-    cbm += cp*tp;
+    cbm += cbmPerCtn*tp;
+    net += netPerCtn*tp;
+    gross += grossPerCtn*tp;
   });
-  return { packed, uom, cbm };
+  return { packed, uom, cbm, net, gross };
 }
 function syncPackingRowsFromDom(){
   document.querySelectorAll('[data-pitem]').forEach(el => {
@@ -1958,19 +2004,31 @@ function packingRecalc(){
   packingItemRows.forEach((it, i) => {
     const up = parseFloat(it.unitPacked)||0;
     const tp = parseFloat(it.totalPacked)||0;
-    const cp = parseFloat(it.cbmPerCarton)||0;
+    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
+    const cbmPerCtn = (L*W*H) / 1000000;
+    const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
+    const cbmCtnEl = document.querySelector(`[data-calc-cbmctn="${i}"]`);
     const uomEl = document.querySelector(`[data-calc-uom="${i}"]`);
     const cbmEl = document.querySelector(`[data-calc-cbm="${i}"]`);
+    const netEl = document.querySelector(`[data-calc-net="${i}"]`);
+    const grossEl = document.querySelector(`[data-calc-gross="${i}"]`);
+    if(cbmCtnEl) cbmCtnEl.textContent = cbmPerCtn ? cbmPerCtn.toFixed(4) : '';
     if(uomEl) uomEl.textContent = (up*tp) ? (up*tp).toLocaleString() : '';
-    if(cbmEl) cbmEl.textContent = (cp*tp) ? (cp*tp).toFixed(2) : '';
+    if(cbmEl) cbmEl.textContent = (cbmPerCtn*tp) ? (cbmPerCtn*tp).toFixed(2) : '';
+    if(netEl) netEl.textContent = (netPerCtn*tp) ? (netPerCtn*tp).toFixed(1) : '';
+    if(grossEl) grossEl.textContent = (grossPerCtn*tp) ? (grossPerCtn*tp).toFixed(1) : '';
   });
   const totals = packingTotals();
   const tp = document.getElementById("packingTotalPacked");
   const tu = document.getElementById("packingTotalUOM");
   const tc = document.getElementById("packingTotalCBM");
+  const tn = document.getElementById("packingTotalNet");
+  const tg = document.getElementById("packingTotalGross");
   if(tp) tp.textContent = totals.packed.toLocaleString();
   if(tu) tu.textContent = totals.uom.toLocaleString();
   if(tc) tc.textContent = totals.cbm.toFixed(2);
+  if(tn) tn.textContent = totals.net.toFixed(1);
+  if(tg) tg.textContent = totals.gross.toFixed(1);
 }
 function addPackingItemRow(){
   syncPackingRowsFromDom();
@@ -2071,7 +2129,8 @@ function saveStageData(shouldPrint, goToStageKey){
     if(stage.packingItems){
       packingItemRows.forEach(it => upsertCatalogItem({
         description: it.description, hsCode: it.hsCode, uom: it.uom,
-        unitPacked: it.unitPacked, cbmPerCarton: it.cbmPerCarton
+        unitPacked: it.unitPacked, lengthCm: it.lengthCm, widthCm: it.widthCm, heightCm: it.heightCm,
+        netWeightPerCtn: it.netWeightPerCtn, grossWeightPerCtn: it.grossWeightPerCtn
       }));
     } else if(stage.hasItems){
       modalItemRows.forEach(it => upsertCatalogItem({
@@ -2245,13 +2304,16 @@ function printDocument(stage, header, docData, ref, customer){
 // Packing list print — matches Babji Manufacturing layout
 function printPackingList(header, docData, ref, customer){
   const items = docData.packingItems || [];
-  let totPacked=0, totUOM=0, totCBM=0;
+  let totPacked=0, totUOM=0, totCBM=0, totNet=0, totGross=0;
   const rows = items.map((it, i) => {
     const up = parseFloat(it.unitPacked)||0;
     const tp = parseFloat(it.totalPacked)||0;
-    const cp = parseFloat(it.cbmPerCarton)||0;
-    const uom = up*tp, cbm = cp*tp;
-    totPacked += tp; totUOM += uom; totCBM += cbm;
+    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
+    const cbmPerCtn = (L*W*H)/1000000;
+    const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
+    const uom = up*tp, cbm = cbmPerCtn*tp, net = netPerCtn*tp, gross = grossPerCtn*tp;
+    totPacked += tp; totUOM += uom; totCBM += cbm; totNet += net; totGross += gross;
+    const dims = (L&&W&&H) ? `${it.lengthCm}×${it.widthCm}×${it.heightCm}` : '';
     return `<tr>
       <td style="text-align:center">${i+1}</td>
       <td style="text-align:center">${escapeHtml(it.hsCode)}</td>
@@ -2261,14 +2323,16 @@ function printPackingList(header, docData, ref, customer){
       <td style="text-align:center">${escapeHtml(it.packingType)}</td>
       <td style="text-align:center">${tp ? tp.toLocaleString() : ''}</td>
       <td style="text-align:center">${uom ? uom.toLocaleString() : ''}</td>
-      <td style="text-align:center">${cp ? cp : ''}</td>
+      <td style="text-align:center">${dims}</td>
       <td style="text-align:center">${cbm ? cbm.toFixed(2) : ''}</td>
+      <td style="text-align:center">${net ? net.toFixed(1) : ''}</td>
+      <td style="text-align:center">${gross ? gross.toFixed(1) : ''}</td>
     </tr>`;
   }).join("");
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Packing List - ${escapeHtml(ref)}</title>
   <style>
-    body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:26px;max-width:860px;margin:0 auto;}
+    body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:26px;max-width:1000px;margin:0 auto;}
     .company{text-align:center;}
     .company h1{margin:0;font-size:1.5rem;letter-spacing:.5px;}
     .company .addr{font-size:.72rem;font-weight:700;margin-top:4px;}
@@ -2276,8 +2340,8 @@ function printPackingList(header, docData, ref, customer){
     .meta{display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:16px;}
     .meta .block div{margin-bottom:3px;}
     .meta b{text-decoration:underline;}
-    table{width:100%;border-collapse:collapse;font-size:.78rem;}
-    th,td{border:1px solid #333;padding:6px 6px;}
+    table{width:100%;border-collapse:collapse;font-size:.74rem;}
+    th,td{border:1px solid #333;padding:5px 5px;}
     th{background:#f5f5f5;text-align:center;}
     tfoot td{font-weight:700;}
     .sig{margin-top:70px;width:280px;}
@@ -2307,7 +2371,7 @@ function printPackingList(header, docData, ref, customer){
     <table>
       <thead>
         <tr>
-          <th>Sr.No</th><th>HS CODE</th><th>ITEM DESCRIPTION</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Quantity (Packed)</th><th>Total Quantity (UOM)</th><th>CBM per Carton</th><th>TOTAL CBM</th>
+          <th>Sr.No</th><th>HS CODE</th><th>ITEM DESCRIPTION</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Qty (Packed)</th><th>Total Qty (UOM)</th><th>L×W×H (cm)</th><th>Total CBM</th><th>Net Wt (kg)</th><th>Gross Wt (kg)</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -2319,6 +2383,8 @@ function printPackingList(header, docData, ref, customer){
           <td style="text-align:center">${totUOM.toLocaleString()}</td>
           <td></td>
           <td style="text-align:center">${totCBM.toFixed(2)}</td>
+          <td style="text-align:center">${totNet.toFixed(1)}</td>
+          <td style="text-align:center">${totGross.toFixed(1)}</td>
         </tr>
       </tfoot>
     </table>
