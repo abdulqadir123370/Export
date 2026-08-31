@@ -522,6 +522,16 @@ function nextInvoiceNo(){
   saveSettings(st);
   return current;
 }
+// Preview the number that WOULD be assigned next, without consuming it — used to show a
+// suggestion on real invoice documents before they're actually saved.
+function peekNextInvoiceNo(){
+  const st = getSettings();
+  return st.invoiceNext || (st.invoiceCounter ? String(st.invoiceCounter) : "1");
+}
+// Stages whose invoice number matters for accounting/tax records — the sequential counter is
+// only ever consumed here, and only the first time each such document is actually saved.
+// Proforma documents (s1, s10) are quotations, not real invoices, so they never draw from it.
+const REAL_INVOICE_STAGES = ["s4","s5","s6","s11"];
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
 function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", lengthCm:"", widthCm:"", heightCm:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
 // Build packing list rows from the invoice items + catalog knowledge, so nothing is typed twice
@@ -773,7 +783,6 @@ function addShipment(){
     localAdd({
       ref, customer, header,
       routing: routingEl.value,
-      invoiceNo: nextInvoiceNo(),
       consigneeId: matchedConsignee ? matchedConsignee.id : null,
       items: [emptyItem()],
       stages: emptyStages(),
@@ -1731,8 +1740,11 @@ function quickAddConsigneeSubmit(ref){
 
 function smartDefault(f, s, header, stage){
   const settings = getSettings();
-  if(f.name === "invoiceNo") return s.invoiceNo || s.ref;
-  if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.invoiceNo || s.ref;
+  if(f.name === "invoiceNo"){
+    if(!(stage && REAL_INVOICE_STAGES.includes(stage.key))) return s.ref; // Proforma docs: free, never wasted
+    return s.invoiceNo || peekNextInvoiceNo(); // real invoice: reuse the shipment's number once drawn, else preview it
+  }
+  if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.ref;
   if(["packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
   if(f.name === "issuerAddress") return (settings.exporterAddresses||{})[SAIF_ENTITY] || "";
   if(f.name === "buyerOverride") return s.customer || "";
@@ -1771,10 +1783,6 @@ function renderStagePage(s, stageKey){
     if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
   });
   const savedDoc = (s.documents && s.documents[stageKey]) || {};
-  if(!s.invoiceNo){
-    s.invoiceNo = nextInvoiceNo();
-    localUpdate(s.id, { invoiceNo: s.invoiceNo });
-  }
   modalItemRows = (savedDoc.items && savedDoc.items.length ? savedDoc.items : s.items) || [emptyItem()];
   modalItemRows = modalItemRows.map(it => ({...it}));
   packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems && s.packingItems.length ? s.packingItems : derivePackingFromItems(s)));
@@ -2099,6 +2107,16 @@ function saveStageData(shouldPrint, goToStageKey){
   try{
     const docData = { ...extraData };
     const updates = { header: headerData };
+
+    // Real invoice numbering: draw the shipment's ONE invoice number from the sequential counter
+    // the first time ANY real invoice document (not a Proforma) is saved for it, then every other
+    // real-invoice document in this same shipment reuses that same number. This is what stops
+    // Proforma-only deals from ever burning a real invoice number.
+    if(REAL_INVOICE_STAGES.includes(currentStageKey) && !s.invoiceNo){
+      const drawn = nextInvoiceNo();
+      s.invoiceNo = drawn;
+      updates.invoiceNo = drawn;
+    }
 
     if(stage.packingItems){
       docData.packingItems = packingItemRows;
