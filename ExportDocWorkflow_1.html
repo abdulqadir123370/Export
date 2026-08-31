@@ -260,7 +260,7 @@ function rememberReusables(headerData, extraData){
   });
   // bank details belong to whichever entity issued THIS document — Saif Al Sahra for s10/s11, otherwise the shipment's shipper
   const bankEntity = extraData.issuerEntity || headerData.exporterEntity;
-  ["bankBeneficiary","bankName","accountNo","swiftCode"].forEach(k => {
+  ["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].forEach(k => {
     if(extraData[k]){
       st.bank[k] = extraData[k];
       if(bankEntity){
@@ -373,16 +373,23 @@ const HEADER_FIELDS = [
   { name:"paymentTerms", label:"Payment Terms", type:"text" },
 ];
 
+// Matches the shipper bank details block used on real printed documents
+const BANK_FIELDS = [
+  {name:"bankBeneficiary", label:"Account Title", type:"text"},
+  {name:"swiftCode", label:"Swift Code", type:"text"},
+  {name:"bankName", label:"Bank Name", type:"text"},
+  {name:"bankAddress", label:"Bank Address", type:"text"},
+  {name:"accountNo", label:"IBAN #", type:"text"},
+  {name:"branchCode", label:"Branch Code", type:"text"},
+];
+
 const STAGES = [
   { key:"s1", num:1, label:"Proforma Invoice", short:"Proforma Invoice", color:"var(--navy)", hasItems:true,
     extraFields:[
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"validityDate",label:"Validity Date",type:"date"},
-      {name:"bankBeneficiary",label:"Bank Beneficiary",type:"text"},
-      {name:"bankName",label:"Bank Name",type:"text"},
-      {name:"accountNo",label:"Account No / IBAN",type:"text"},
-      {name:"swiftCode",label:"SWIFT Code",type:"text"},
+      ...BANK_FIELDS,
     ]},
   { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:false, fileUpload:true,
     extraFields:[]},
@@ -403,7 +410,7 @@ const STAGES = [
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"lcNumber",label:"L/C Number",type:"text"},
       {name:"lcDate",label:"L/C Date",type:"date"},
-      {name:"bankName",label:"Bank Name",type:"text"},
+      ...BANK_FIELDS,
     ]},
   { key:"s6", num:6, label:"Commercial Invoice with SS Number", short:"Comm. Invoice (SS No.)", color:"var(--orange)", hasItems:true,
     extraFields:[
@@ -426,10 +433,7 @@ const STAGES = [
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"validityDate",label:"Validity Date",type:"date"},
       {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
-      {name:"bankBeneficiary",label:"Bank Beneficiary",type:"text"},
-      {name:"bankName",label:"Bank Name",type:"text"},
-      {name:"accountNo",label:"Account No / IBAN",type:"text"},
-      {name:"swiftCode",label:"SWIFT Code",type:"text"},
+      ...BANK_FIELDS,
     ]},
   { key:"s11", num:11, label:"Tax Invoice (Saif Al Sahra)", short:"Tax Invoice (Saif Al Sahra)", color:"var(--blue)", hasItems:true,
     extraFields:[
@@ -438,19 +442,26 @@ const STAGES = [
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
-      {name:"ntn",label:"NTN",type:"text"},
-      {name:"salesTaxNo",label:"Sales Tax Reg No",type:"text"},
+      {name:"ntn",label:"TRN",type:"text"},
+      {name:"salesTaxNo",label:"VAT Number",type:"text"},
       {name:"taxRate",label:"Tax Rate (%)",type:"text"},
-      {name:"bankBeneficiary",label:"Bank Beneficiary",type:"text"},
-      {name:"bankName",label:"Bank Name",type:"text"},
-      {name:"accountNo",label:"Account No / IBAN",type:"text"},
-      {name:"swiftCode",label:"SWIFT Code",type:"text"},
+      ...BANK_FIELDS,
     ]},
   { key:"s12", num:12, label:"B/L Copy", short:"B/L Copy", color:"var(--purple)", hasItems:false, fileUpload:true,
     extraFields:[]},
   { key:"s13", num:13, label:"Certificate of Origin Copy", short:"CO Copy", color:"var(--teal)", hasItems:false, fileUpload:true,
     extraFields:[]},
 ];
+
+// Every invoice-type document gets an optional "Additional Charge" line (freight, handling, bank fee, etc.)
+// that appears as its own row on the printed invoice and adds into the total shown to the customer.
+["s1","s4","s5","s6","s10","s11"].forEach(key => {
+  const st = STAGES.find(x => x.key === key);
+  if(st) st.extraFields = [...st.extraFields,
+    {name:"extraChargeLabel", label:"Additional Charge — description (optional)", type:"text"},
+    {name:"extraChargeAmount", label:"Additional Charge — amount", type:"text"},
+  ];
+});
 
 let shipments = [];
 let providers = [];
@@ -1172,10 +1183,12 @@ function renderDataView(){
         <div class="section-title">${escapeHtml(e)}</div>
         <div class="field-grid">
           <div class="field" style="grid-column:1/-1;"><label>Address</label><input id="setExpAddr${i}" type="text" value="${escapeHtml(addr)}"></div>
-          <div class="field"><label>Bank Beneficiary</label><input id="setBen${i}" type="text" value="${escapeHtml(bank.bankBeneficiary||'')}"></div>
+          <div class="field"><label>Account Title</label><input id="setBen${i}" type="text" value="${escapeHtml(bank.bankBeneficiary||'')}"></div>
+          <div class="field"><label>Swift Code</label><input id="setSwift${i}" type="text" value="${escapeHtml(bank.swiftCode||'')}"></div>
           <div class="field"><label>Bank Name</label><input id="setBank${i}" type="text" value="${escapeHtml(bank.bankName||'')}"></div>
-          <div class="field"><label>Account No / IBAN</label><input id="setAcct${i}" type="text" value="${escapeHtml(bank.accountNo||'')}"></div>
-          <div class="field"><label>SWIFT Code</label><input id="setSwift${i}" type="text" value="${escapeHtml(bank.swiftCode||'')}"></div>
+          <div class="field"><label>Bank Address</label><input id="setBankAddr${i}" type="text" value="${escapeHtml(bank.bankAddress||'')}"></div>
+          <div class="field"><label>IBAN #</label><input id="setAcct${i}" type="text" value="${escapeHtml(bank.accountNo||'')}"></div>
+          <div class="field"><label>Branch Code</label><input id="setBranch${i}" type="text" value="${escapeHtml(bank.branchCode||'')}"></div>
         </div>`;
       }).join("")}
       <div class="section-title">Invoice Numbering</div>
@@ -1233,7 +1246,9 @@ function saveCompanySettings(){
     st.bankByEntity[e] = {
       bankBeneficiary: document.getElementById("setBen"+i).value.trim(),
       bankName: document.getElementById("setBank"+i).value.trim(),
+      bankAddress: document.getElementById("setBankAddr"+i).value.trim(),
       accountNo: document.getElementById("setAcct"+i).value.trim(),
+      branchCode: document.getElementById("setBranch"+i).value.trim(),
       swiftCode: document.getElementById("setSwift"+i).value.trim()
     };
   });
@@ -1572,7 +1587,7 @@ function renderShipmentFinancials(s){
   const invDoc = (s.documents && (s.documents.s5 || s.documents.s4 || s.documents.s1)) || null;
   const invCurrency = (s.header && s.header.currency) || "USD";
   const invoiceValue = invDoc && invDoc.items
-    ? invDoc.items.reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0)
+    ? invDoc.items.reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0) + (parseFloat(invDoc.extraChargeAmount)||0)
     : 0;
   const marginStat = invoiceValue > 0 ? `
       <div class="stat"><div class="label">Invoice Value</div><div class="value">${escapeHtml(invCurrency)} ${invoiceValue.toLocaleString()}</div></div>
@@ -1694,7 +1709,7 @@ function smartDefault(f, s, header, stage){
   if(f.name === "validityDate"){ const d = new Date(); d.setDate(d.getDate()+30); return d.toISOString().slice(0,10); }
   if(f.name === "issuerAddress") return (settings.exporterAddresses||{})[SAIF_ENTITY] || "";
   if(f.name === "buyerOverride") return s.customer || "";
-  if(["bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)){
+  if(["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].includes(f.name)){
     // Saif Al Sahra documents (s10/s11) use Saif Al Sahra's own bank; other stages use the shipment's shipper entity
     const isSaifDoc = stage && stage.extraFields.some(x => x.name === "issuerEntity");
     const entity = isSaifDoc ? SAIF_ENTITY : header.exporterEntity;
@@ -1831,7 +1846,7 @@ function shipperChanged(entity){
   const addrEl = document.querySelector('#headerFields [data-field="exporterAddress"]');
   if(addrEl) addrEl.value = (st.exporterAddresses||{})[entity] || "";
   const bank = (st.bankByEntity||{})[entity] || st.bank || {};
-  ["bankBeneficiary","bankName","accountNo","swiftCode"].forEach(k => {
+  ["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].forEach(k => {
     const el = document.querySelector('#extraFields [data-field="'+k+'"]');
     if(el) el.value = bank[k] || "";
   });
@@ -2066,7 +2081,7 @@ function saveStageData(shouldPrint, goToStageKey){
 
     // Auto-post receivable: Commercial Invoice (Bank) total goes to the consignee's ledger
     if(currentStageKey === "s5"){
-      const total = modalItemRows.reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0);
+      const total = modalItemRows.reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0) + (parseFloat(extraData.extraChargeAmount)||0);
       const cons = consignees.find(c => c.id === s.consigneeId)
         || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
       if(total > 0 && cons){
@@ -2117,17 +2132,24 @@ function printDocument(stage, header, docData, ref, customer){
     </tr>`;
   }).join("") : "";
 
-  const grandTotal = stage.hasItems ? (docData.items||[]).reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0) : 0;
+  const extraChargeAmt = parseFloat(docData.extraChargeAmount) || 0;
+  const extraChargeRow = (stage.hasItems && extraChargeAmt) ? `<tr>
+      <td colspan="4" style="text-align:right;font-style:italic;">${escapeHtml(docData.extraChargeLabel || "Additional Charge")}</td>
+      <td style="text-align:right;font-style:italic;">${escapeHtml(header.currency||'')} ${extraChargeAmt.toFixed(2)}</td>
+    </tr>` : "";
+
+  const itemsSubtotal = stage.hasItems ? (docData.items||[]).reduce((sum,it) => sum + (parseFloat(it.qty)||0)*(parseFloat(it.unitPrice)||0), 0) : 0;
+  const grandTotal = itemsSubtotal + extraChargeAmt;
 
   const itemsTable = stage.hasItems ? `
     <table class="doc-items">
       <thead><tr><th>Description</th><th>HS Code</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
-      <tbody>${itemsRows}</tbody>
+      <tbody>${itemsRows}${extraChargeRow}</tbody>
       ${grandTotal ? `<tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Grand Total</td><td style="text-align:right;font-weight:700">${escapeHtml(header.currency||'')} ${grandTotal.toFixed(2)}</td></tr></tfoot>` : ""}
     </table>` : "";
 
   const extraRows = stage.extraFields.map(f => {
-    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode"].includes(f.name)) return ""; // shown elsewhere (meta / bank block)
+    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode","extraChargeLabel","extraChargeAmount"].includes(f.name)) return ""; // shown elsewhere (meta / bank block / items table)
     const v = docData[f.name];
     if(!v) return "";
     return `<div class="doc-field"><span>${f.label}</span><b>${escapeHtml(v)}</b></div>`;
@@ -2138,14 +2160,16 @@ function printDocument(stage, header, docData, ref, customer){
   const letterheadAddress = docData.issuerAddress || header.exporterAddress || "";
 
   const bankFieldDefs = [
-    {name:"bankBeneficiary", label:"Beneficiary"},
+    {name:"bankBeneficiary", label:"Account Title"},
+    {name:"swiftCode", label:"Swift Code"},
     {name:"bankName", label:"Bank Name"},
-    {name:"accountNo", label:"Account No / IBAN"},
-    {name:"swiftCode", label:"SWIFT Code"},
+    {name:"bankAddress", label:"Bank Address"},
+    {name:"accountNo", label:"IBAN #"},
+    {name:"branchCode", label:"Branch Code"},
   ];
   const bankRows = bankFieldDefs.map(f => docData[f.name] ? `<div class="doc-field"><span>${f.label}:</span><b>${escapeHtml(docData[f.name])}</b></div>` : "").join("");
   const bankBlock = bankRows ? `
-    <div class="section-label">Bank Details</div>
+    <div class="section-label">Shipper Bank Details</div>
     <div class="doc-fields">${bankRows}</div>` : "";
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escapeHtml(stage.label)} - ${escapeHtml(ref)}</title>
