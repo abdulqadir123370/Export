@@ -390,7 +390,7 @@ const BANK_FIELDS = [
 const STAGES = [
   { key:"s1", num:1, label:"Proforma Invoice", short:"Proforma Invoice", color:"var(--navy)", hasItems:true,
     extraFields:[
-      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceNo",label:"Ref Number",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       ...BANK_FIELDS,
     ]},
@@ -398,6 +398,7 @@ const STAGES = [
     extraFields:[]},
   { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:false, packingItems:true,
     extraFields:[
+      {name:"packingStatus",label:"Status",type:"select",options:["Final","Draft / Provisional — not yet finalized"],default:"Final"},
       {name:"packingDate",label:"Packing Date",type:"date"},
       {name:"containerNo",label:"Container Number",type:"text"},
       {name:"containerType",label:"Container Type",type:"select",options:["1 X 20 FT CONTAINER","1 X 20 HQ CONTAINER","1 X 40 FT CONTAINER","1 X 40 HQ CONTAINER","LCL"]},
@@ -432,7 +433,7 @@ const STAGES = [
     extraFields:[
       {name:"issuerEntity",label:"Issued By (Shipper)",type:"text",default:SAIF_ENTITY},
       {name:"issuerAddress",label:"Issuer Address",type:"text"},
-      {name:"invoiceNo",label:"Invoice No",type:"text"},
+      {name:"invoiceNo",label:"Ref Number",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
       ...BANK_FIELDS,
@@ -1584,12 +1585,15 @@ function renderDetailView(s){
 
   const navPills = applicable.map((st, idx) => {
     const d = stages[st.key] || {};
+    const savedDoc = (s.documents && s.documents[st.key]) || {};
+    const isDraftPacking = st.key === "s3" && d.done && savedDoc.packingStatus && savedDoc.packingStatus.startsWith("Draft");
+    const statusText = isDraftPacking ? '⚠ Draft' : (d.done ? '✓ Generated' : (st.optional ? 'Optional' : 'Pending'));
     return `
       <div class="stage-pill ${st.key===currentStageKey?'active':''} ${d.done?'done':''}" onclick="App.selectStage('${st.key}')">
         <div class="num" style="background:${st.color}">${idx+1}</div>
         <div>
           <div class="name">${escapeHtml(st.short)}</div>
-          <div class="status">${d.done ? '✓ Generated' : (st.optional ? 'Optional' : 'Pending')}</div>
+          <div class="status" ${isDraftPacking ? 'style="color:#c0392b;font-weight:700;"' : ''}>${statusText}</div>
         </div>
       </div>`;
   }).join("");
@@ -2285,7 +2289,13 @@ function printDocument(stage, header, docData, ref, customer){
     <div class="doc-meta">
       <div>
         <div><b>Ref:</b> ${escapeHtml(ref)}</div>
-        ${docData.invoiceNo ? `<div class="invno"><b>Invoice No:</b> ${escapeHtml(docData.invoiceNo)}</div>` : ""}
+        ${(() => {
+          const invField = stage.extraFields.find(f => f.name === "invoiceNo");
+          const invLabel = invField ? invField.label : "Invoice No";
+          if(!docData.invoiceNo) return "";
+          if(invLabel === "Ref Number" && docData.invoiceNo === ref) return ""; // avoid showing the same ref twice
+          return `<div class="invno"><b>${escapeHtml(invLabel)}:</b> ${escapeHtml(docData.invoiceNo)}</div>`;
+        })()}
       </div>
       <div><b>Date:</b> ${escapeHtml(docData.invoiceDate||docData.contractDate||docData.blDate||docData.certDate||docData.loadingDate||docData.packingDate||'')}</div>
     </div>
@@ -2348,9 +2358,10 @@ function printPackingList(header, docData, ref, customer){
     </tr>`;
   }).join("");
 
+  const isDraft = docData.packingStatus && docData.packingStatus.startsWith("Draft");
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Packing List - ${escapeHtml(ref)}</title>
   <style>
-    body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:26px;max-width:1000px;margin:0 auto;}
+    body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:26px;max-width:1000px;margin:0 auto;position:relative;}
     .company{text-align:center;}
     .company h1{margin:0;font-size:1.5rem;letter-spacing:.5px;}
     .company .addr{font-size:.72rem;font-weight:700;margin-top:4px;}
@@ -2364,9 +2375,13 @@ function printPackingList(header, docData, ref, customer){
     tfoot td{font-weight:700;}
     .sig{margin-top:70px;width:280px;}
     .sig .line{border-top:1px solid #333;text-align:center;padding-top:5px;font-size:.8rem;}
-    @media print{ body{padding:8mm;} }
+    .draft-banner{background:#fff4e5;border:2px solid #e0a324;color:#7a5200;text-align:center;font-weight:700;padding:8px;margin-bottom:16px;font-size:.85rem;letter-spacing:.5px;}
+    .draft-watermark{position:fixed;top:45%;left:50%;transform:translate(-50%,-50%) rotate(-30deg);font-size:5rem;font-weight:800;color:rgba(200,50,50,0.15);z-index:-1;white-space:nowrap;pointer-events:none;}
+    @media print{ body{padding:8mm;} .draft-watermark{position:fixed;} }
   </style></head>
   <body>
+    ${isDraft ? '<div class="draft-watermark">DRAFT — NOT FINAL</div>' : ''}
+    ${isDraft ? '<div class="draft-banner">⚠ DRAFT / PROVISIONAL — Packing not yet finalized. Figures subject to change.</div>' : ''}
     <div class="company">
       <h1>${escapeHtml(header.exporterEntity||'BABJI MANUFACTURING').toUpperCase()}</h1>
       <div class="addr">${escapeHtml(header.exporterAddress||'')}</div>
