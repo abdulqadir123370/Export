@@ -251,7 +251,7 @@ function rememberReusables(headerData, extraData){
     st.exporterAddresses[extraData.issuerEntity] = extraData.issuerAddress;
   }
   // remember last-used values for fields that repeat across shipments (final destination intentionally NOT remembered)
-  ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading","consignee"].forEach(k => {
+  ["portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
     if(headerData[k]) st.lastHeader[k] = headerData[k];
   });
   // bank details belong to whichever entity issued THIS document — Saif Al Sahra for s10/s11, otherwise the shipment's shipper
@@ -358,8 +358,7 @@ const HEADER_FIELDS = [
   { name:"exporterEntity", label:"Shipper", type:"select", options:SETTINGS_ENTITIES, default:EXPORTERS[0] },
   { name:"exporterAddress", label:"Shipper Address", type:"text" },
   { name:"buyerAddress", label:"Buyer Address", type:"text" },
-  { name:"consignee", label:"Consignee (if different)", type:"text" },
-  { name:"notifyParty", label:"Notify Party", type:"text" },
+  { name:"consignee", label:"Consignee", type:"text" },
   { name:"portOfLoading", label:"Port of Loading", type:"text", default:"Karachi, Pakistan" },
   { name:"portOfDischarge", label:"Port of Discharge", type:"text" },
   { name:"finalDestination", label:"Final Destination", type:"text" },
@@ -394,7 +393,7 @@ const STAGES = [
       {name:"containerNo",label:"Container Number",type:"text"},
       {name:"containerType",label:"Container Type",type:"select",options:["1 X 20 FT CONTAINER","1 X 20 HQ CONTAINER","1 X 40 FT CONTAINER","1 X 40 HQ CONTAINER","LCL"]},
     ]},
-  { key:"s4", num:4, label:"Commercial Invoice (Customer) - Optional", short:"Comm. Invoice (Customer)", color:"var(--amber)", optional:true, hasItems:true,
+  { key:"s4", num:4, label:"Commercial Invoice (Customer)", short:"Comm. Invoice (Customer)", color:"var(--amber)", optional:true, hasItems:true,
     extraFields:[
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
@@ -414,7 +413,7 @@ const STAGES = [
       {name:"ssNumber",label:"SS Number",type:"text"},
       {name:"ssDate",label:"SS Date",type:"date"},
     ]},
-  { key:"s7", num:7, label:"Contract - Optional", short:"Contract", color:"var(--purple)", optional:true, hasItems:false,
+  { key:"s7", num:7, label:"Contract", short:"Contract", color:"var(--purple)", optional:true, hasItems:false,
     extraFields:[
       {name:"contractNo",label:"Contract No",type:"text"},
       {name:"contractDate",label:"Contract Date",type:"date"},
@@ -468,6 +467,7 @@ let currentConsigneeId = null;
 let quickFormOpen = null; // null | 'expense' | 'consignee' — inline forms on the shipment detail page
 let modalItemRows = [];
 let packingItemRows = [];
+let customFieldRows = []; // ad-hoc {label, value} pairs for anything non-standard on a document
 let pendingUploadFile = null; // { name, dataUrl } waiting to be saved with the stage
 
 function toast(msg, isError){
@@ -789,7 +789,7 @@ function renderListView(){
         </select>
         <button id="addBtn" onclick="App.addShipment()">Add Shipment</button>
       </div>
-      <div style="font-size:.78rem;color:var(--muted);margin-top:8px;">Customer = the real paying buyer (used for the receivable ledger and the Saif Al Sahra invoice). For UAE-routed shipments, Saif Al Sahra is the redistributor, not the customer — it's set automatically as the Consignee, so don't enter it here.${consignees.length === 0 ? ' Add your customers on the 👥 Consignees tab first.' : ''}</div>
+      <div style="font-size:.78rem;color:var(--muted);margin-top:8px;">Customer = the real paying buyer (used for the receivable ledger and the Saif Al Sahra invoice). For UAE-routed shipments, Saif Al Sahra is the redistributor, not the customer — it appears automatically as the Buyer on your own documents, so don't enter it here.${consignees.length === 0 ? ' Add your customers on the 👥 Consignees tab first.' : ''}</div>
     </div>
     <div class="search">
       <input id="searchBox" type="text" placeholder="Search by reference or customer..." oninput="App.render()">
@@ -817,7 +817,7 @@ function addShipment(){
     }
     // pre-fill repeat fields from last shipment (final destination intentionally left blank)
     const lastHeader = settings.lastHeader || {};
-    ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
+    ["portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
       if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
     });
     // pre-fill buyer address from the consignee record
@@ -827,7 +827,7 @@ function addShipment(){
     }
     if(routingEl.value === "uae"){
       header.finalDestination = header.finalDestination || "UAE";
-      header.consignee = header.consignee || "Saif Al Sahra";
+      header.consignee = header.consignee || header.exporterEntity; // UAE: shipper is consignee ("to order"); buyer is Saif Al Sahra
       header.portOfDischarge = header.portOfDischarge || "Jebel Ali, UAE";
     } else {
       header.consignee = header.consignee || customer;
@@ -1863,13 +1863,17 @@ function renderStagePage(s, stageKey){
       || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
     if(mc && mc.address) header.buyerAddress = mc.address;
   }
-  if(!header.consignee){
-    header.consignee = s.routing === "direct" ? (s.customer || "") : "Saif Al Sahra";
+  if(s.routing !== "direct"){
+    // UAE routing: the shipper is the consignee. Also migrates shipments saved under the
+    // old default (where "Saif Al Sahra" sat in this slot) — Saif Al Sahra is the buyer now.
+    if(!header.consignee || header.consignee === "Saif Al Sahra") header.consignee = header.exporterEntity || "";
+  } else if(!header.consignee){
+    header.consignee = s.customer || "";
   }
   if(!header.portOfDischarge && s.routing !== "direct"){
     header.portOfDischarge = "Jebel Ali, UAE";
   }
-  ["notifyParty","portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
+  ["portOfDischarge","paymentTerms","currency","incoterm","portOfLoading"].forEach(k => {
     if(!header[k] && lastHeader[k]) header[k] = lastHeader[k];
   });
   const savedDoc = (s.documents && s.documents[stageKey]) || {};
@@ -1877,11 +1881,16 @@ function renderStagePage(s, stageKey){
   modalItemRows = modalItemRows.map(it => ({...it}));
   packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems && s.packingItems.length ? s.packingItems : derivePackingFromItems(s)));
   packingItemRows = packingItemRows.map(it => ({...it}));
+  customFieldRows = (savedDoc.customFields || []).map(f => ({...f}));
   pendingUploadFile = null;
 
   const isSaifDoc = stage.extraFields.some(f => f.name === "issuerEntity");
+  // Buyer Address is the END customer's address. It only belongs on the Saif Al Sahra docs
+  // (shown next to Buyer Name there). On UAE manufacturer docs the buyer is Saif Al Sahra, so hide it.
+  const hideBuyerAddress = isSaifDoc || s.routing !== "direct";
   const headerFieldsHtml = HEADER_FIELDS
-    .filter(f => !(isSaifDoc && (f.name === "exporterEntity" || f.name === "exporterAddress" || f.name === "buyerAddress")))
+    .filter(f => !(isSaifDoc && (f.name === "exporterEntity" || f.name === "exporterAddress")))
+    .filter(f => !(hideBuyerAddress && f.name === "buyerAddress"))
     .map(f => `
     <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
   const saifNote = isSaifDoc ? `<div style="font-size:.78rem;color:var(--muted);margin:-4px 0 14px;">This document is issued by Saif Al Sahra — see "Issued By" below. (The manufacturing Shipper above doesn't apply here and isn't shown.)</div>` : "";
@@ -1917,6 +1926,15 @@ function renderStagePage(s, stageKey){
     <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">Upload the ${escapeHtml(stage.label.toLowerCase())} (scanned PDF, photo, or Excel/CSV). Keep it under ~200 KB — a low-res photo or a compressed PDF works well; large hi-res scans usually won't fit.</div>`;
   }
 
+  const remarksAndCustomBlock = !stage.fileUpload ? `
+      <div class="section-title">Remarks</div>
+      <div class="field-grid single" id="remarksSection">
+        <div class="field"><textarea data-field="remarks" style="min-height:70px;">${escapeHtml(savedDoc.remarks||'')}</textarea></div>
+      </div>
+
+      <div class="section-title">Additional Fields <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;">— for anything non-standard, not covered above</span></div>
+      <div id="customFieldsWrap">${renderCustomFieldsEditor()}</div>` : "";
+
   const applicable = stagesForShipment(s);
   const stageIdx = applicable.findIndex(x => x.key === stageKey);
   const nextStage = applicable[stageIdx+1];
@@ -1935,6 +1953,7 @@ function renderStagePage(s, stageKey){
       <div class="field-grid" id="extraFields">${extraFieldsHtml}</div>` : ""}
 
       ${itemsBlock}
+      ${remarksAndCustomBlock}
 
       <div class="page-actions">
         <div>${nextStage ? `<button class="btn-nextstage" onclick="App.saveStageData(false,'${nextStage.key}')">Save & Go to Next Document →</button>` : ''}</div>
@@ -1977,6 +1996,13 @@ function shipperChanged(entity){
   });
   const shipperEl = document.querySelector('#extraFields [data-field="shipperName"]');
   if(shipperEl) shipperEl.value = entity;
+  // On UAE shipments the shipper is the consignee — keep that in step when the shipper changes
+  // (only if the field still holds an auto-set company name; a hand-typed value is left alone).
+  const ship = shipments.find(x => x.id === currentShipId);
+  const consEl = document.querySelector('#headerFields [data-field="consignee"]');
+  if(ship && ship.routing !== "direct" && consEl && (!consEl.value || SETTINGS_ENTITIES.includes(consEl.value))){
+    consEl.value = entity;
+  }
 }
 
 function renderItemsEditor(){
@@ -2072,7 +2098,8 @@ function renderPackingItemsEditor(){
       </tr></tfoot>
     </table>
     </div>
-    <button type="button" class="add-item-btn" onclick="App.addPackingItemRow()">+ Add Item</button>`;
+    <button type="button" class="add-item-btn" onclick="App.addPackingItemRow()">+ Add Item</button>
+    <button type="button" class="add-item-btn" onclick="App.recalcCartonsFromItems()" style="margin-left:8px;">↻ Recalculate Cartons (Qty ÷ Unit Packed)</button>`;
 }
 function packingTotals(){
   let packed=0, uom=0, cbm=0, net=0, gross=0;
@@ -2128,6 +2155,30 @@ function packingRecalc(){
   if(tn) tn.textContent = totals.net.toFixed(1);
   if(tg) tg.textContent = totals.gross.toFixed(1);
 }
+// Recompute each row's Cartons from the invoice quantity ÷ Unit Packed — use this any time
+// Unit Packed gets corrected after the packing list was first generated, since Cartons doesn't
+// auto-update on its own (it's an editable field, not a live formula).
+function recalcCartonsFromItems(){
+  syncPackingRowsFromDom();
+  const s = shipments.find(x => x.id === currentShipId);
+  if(!s){ toast("Open a shipment first", true); return; }
+  let changed = 0;
+  packingItemRows.forEach(row => {
+    const invItem = (s.items||[]).find(it => (it.description||"").trim().toLowerCase() === (row.description||"").trim().toLowerCase());
+    const qty = invItem ? parseFloat(invItem.qty)||0 : 0;
+    const perCtn = parseFloat(row.unitPacked)||0;
+    if(qty && perCtn){
+      row.totalPacked = String(Math.ceil(qty / perCtn));
+      changed++;
+    }
+  });
+  document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
+  if(changed === 0){
+    toast("Couldn't match any rows to invoice items — check item descriptions match, and Unit Packed is filled in.", true);
+  } else {
+    toast(`Recalculated cartons for ${changed} item${changed===1?'':'s'}`);
+  }
+}
 function addPackingItemRow(){
   syncPackingRowsFromDom();
   packingItemRows.push(emptyPackingItem());
@@ -2138,6 +2189,38 @@ function removePackingItemRow(i){
   packingItemRows.splice(i,1);
   if(packingItemRows.length===0) packingItemRows.push(emptyPackingItem());
   document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
+}
+
+// ---------- Additional/custom fields (ad-hoc label+value pairs for non-standard entries) ----------
+function emptyCustomField(){ return { label:"", value:"" }; }
+function renderCustomFieldsEditor(){
+  if(customFieldRows.length === 0) customFieldRows = [emptyCustomField()];
+  const rows = customFieldRows.map((f,i) => `
+    <div style="display:flex;gap:10px;margin-bottom:8px;align-items:center;">
+      <input data-customfield="label" data-idx="${i}" value="${escapeHtml(f.label)}" placeholder="Field name (e.g. Screw Type)" style="flex:1;padding:9px 11px;border:1px solid var(--border);border-radius:6px;font-size:.86rem;">
+      <input data-customfield="value" data-idx="${i}" value="${escapeHtml(f.value)}" placeholder="Value (e.g. Italy screw hole)" style="flex:1;padding:9px 11px;border:1px solid var(--border);border-radius:6px;font-size:.86rem;">
+      <button type="button" class="rm" onclick="App.removeCustomFieldRow(${i})">✕</button>
+    </div>`).join("");
+  return `<div id="customFieldRowsInner">${rows}</div>
+    <button type="button" class="add-item-btn" onclick="App.addCustomFieldRow()">+ Add Field</button>`;
+}
+function syncCustomFieldsFromDom(){
+  document.querySelectorAll('[data-customfield]').forEach(el => {
+    const idx = parseInt(el.dataset.idx,10);
+    const key = el.dataset.customfield;
+    if(customFieldRows[idx]) customFieldRows[idx][key] = el.value;
+  });
+}
+function addCustomFieldRow(){
+  syncCustomFieldsFromDom();
+  customFieldRows.push(emptyCustomField());
+  document.getElementById("customFieldsWrap").innerHTML = renderCustomFieldsEditor();
+}
+function removeCustomFieldRow(i){
+  syncCustomFieldsFromDom();
+  customFieldRows.splice(i,1);
+  if(customFieldRows.length===0) customFieldRows.push(emptyCustomField());
+  document.getElementById("customFieldsWrap").innerHTML = renderCustomFieldsEditor();
 }
 
 // ---------- Loading sheet file upload ----------
@@ -2181,24 +2264,27 @@ async function saveStageData(shouldPrint, goToStageKey){
 
   syncItemRowsFromDom();
   if(stage.packingItems) syncPackingRowsFromDom();
+  if(!stage.fileUpload) syncCustomFieldsFromDom();
 
   const headerData = {};
   document.querySelectorAll('#headerFields [data-field]').forEach(el => headerData[el.dataset.field] = el.value);
-  // Saif Al Sahra documents (s10/s11) don't show the shared Shipper fields — carry the existing values
-  // forward so saving here doesn't wipe them out for the rest of the shipment's documents.
-  if(!("exporterEntity" in headerData) && s.header){
-    headerData.exporterEntity = s.header.exporterEntity || "";
-    headerData.exporterAddress = s.header.exporterAddress || "";
-  }
+  // Some pages hide certain shared fields (Shipper on Saif Al Sahra docs, Buyer Address on UAE
+  // manufacturer docs). Carry those forward from the saved header so saving here never wipes them.
+  HEADER_FIELDS.forEach(f => {
+    if(!(f.name in headerData) && s.header && s.header[f.name] != null) headerData[f.name] = s.header[f.name];
+  });
   // Fields rendered outside #headerFields (e.g. Buyer Address paired next to Buyer Name) still belong to the shared header
   document.querySelectorAll('[data-headerfield]').forEach(el => headerData[el.dataset.headerfield] = el.value);
   const extraData = {};
   if(document.getElementById("extraFields")){
     document.querySelectorAll('#extraFields [data-field]').forEach(el => extraData[el.dataset.field] = el.value);
   }
+  // Remarks textarea lives in its own section, not #extraFields
+  document.querySelectorAll('#remarksSection [data-field]').forEach(el => extraData[el.dataset.field] = el.value);
 
   try{
     const docData = { ...extraData };
+    if(!stage.fileUpload) docData.customFields = customFieldRows.filter(f => f.label || f.value);
     const updates = { header: headerData };
 
     // Real invoice numbering: draw the shipment's ONE invoice number from the sequential counter
@@ -2271,7 +2357,7 @@ async function saveStageData(shouldPrint, goToStageKey){
 
     pendingUploadFile = null;
     if(!(currentStageKey === "s5")) toast(shouldPrint ? "Saved — opening print view" : "Saved");
-    if(shouldPrint) printDocument(stage, headerData, docData, s.ref, s.customer);
+    if(shouldPrint) printDocument(stage, headerData, docData, s.ref, s.customer, s.routing);
     if(goToStageKey){ currentStageKey = goToStageKey; }
     refreshFromStorage();
   }catch(err){
@@ -2285,9 +2371,9 @@ async function saveStageData(shouldPrint, goToStageKey){
 }
 
 // ---------- Print rendering ----------
-function printDocument(stage, header, docData, ref, customer){
+function printDocument(stage, header, docData, ref, customer, routing){
   if(stage.packingItems){
-    printPackingList(header, docData, ref, customer);
+    printPackingList(header, docData, ref, customer, routing);
     return;
   }
   const itemsRows = stage.hasItems ? (docData.items||[]).map(it => {
@@ -2325,7 +2411,22 @@ function printDocument(stage, header, docData, ref, customer){
     return `<div class="doc-field"><span>${f.label}</span><b>${escapeHtml(v)}</b></div>`;
   }).join("");
 
-  const buyerName = docData.buyerOverride || customer || "";
+  // Who the parties are depends on the leg this document belongs to:
+  //  - UAE routing, manufacturer-issued docs: Buyer = Saif Al Sahra (with their saved address),
+  //    Consignee = the shipper ("to order"). The end customer does not appear here.
+  //  - Saif Al Sahra-issued docs (s10/s11): Buyer = the end customer. No consignee line.
+  //  - Direct export: Buyer = the customer, Consignee = whatever is in the Consignee field.
+  const isSaifIssued = stage.extraFields.some(f => f.name === "issuerEntity");
+  const isUaeManufacturerDoc = routing !== "direct" && !isSaifIssued;
+  let buyerName, buyerAddress;
+  if(isUaeManufacturerDoc){
+    buyerName = SAIF_ENTITY;
+    buyerAddress = (getSettings().exporterAddresses||{})[SAIF_ENTITY] || "";
+  } else {
+    buyerName = docData.buyerOverride || customer || "";
+    buyerAddress = header.buyerAddress || "";
+  }
+  const showConsignee = !isSaifIssued;
   const letterheadCompany = docData.issuerEntity || header.exporterEntity || "";
   const letterheadAddress = docData.issuerAddress || header.exporterAddress || "";
 
@@ -2341,6 +2442,15 @@ function printDocument(stage, header, docData, ref, customer){
   const bankBlock = bankRows ? `
     <div class="section-label">Shipper Bank Details</div>
     <div class="doc-fields">${bankRows}</div>` : "";
+
+  const remarksPrintBlock = docData.remarks ? `
+    <div class="section-label">Remarks</div>
+    <div style="font-size:.85rem;white-space:pre-wrap;">${escapeHtml(docData.remarks)}</div>` : "";
+  const customPrintRows = (docData.customFields||[]).filter(f => f.label && f.value)
+    .map(f => `<div class="doc-field"><span>${escapeHtml(f.label)}:</span><b>${escapeHtml(f.value)}</b></div>`).join("");
+  const customFieldsPrintBlock = customPrintRows ? `
+    <div class="section-label">Additional Info</div>
+    <div class="doc-fields">${customPrintRows}</div>` : "";
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escapeHtml(stage.label)} - ${escapeHtml(ref)}</title>
   <style>
@@ -2389,9 +2499,8 @@ function printDocument(stage, header, docData, ref, customer){
       <div><b>Date:</b> ${escapeHtml(docData.invoiceDate||docData.contractDate||docData.blDate||docData.certDate||docData.loadingDate||docData.packingDate||'')}</div>
     </div>
     <div class="parties">
-      <div class="party"><h4>Buyer</h4><div>${escapeHtml(buyerName)}</div>${header.buyerAddress ? `<div class="addr-line">${escapeHtml(header.buyerAddress)}</div>` : `<div class="addr-missing">No address on file</div>`}</div>
-      <div class="party"><h4>Consignee</h4>${escapeHtml(header.consignee||buyerName)}</div>
-      <div class="party"><h4>Notify Party</h4>${escapeHtml(header.notifyParty||'')}</div>
+      <div class="party"><h4>Buyer</h4><div>${escapeHtml(buyerName)}</div>${buyerAddress ? `<div class="addr-line">${escapeHtml(buyerAddress)}</div>` : `<div class="addr-missing">No address on file</div>`}</div>
+      ${showConsignee ? `<div class="party"><h4>Consignee</h4>${escapeHtml(header.consignee||'')}</div>` : ''}
     </div>
     <div class="doc-fields">
       <div class="doc-field"><span>Port of Loading:</span><b>${escapeHtml(header.portOfLoading||'')}</b></div>
@@ -2400,6 +2509,8 @@ function printDocument(stage, header, docData, ref, customer){
       ${extraRows}
     </div>
     ${itemsTable}
+    ${remarksPrintBlock}
+    ${customFieldsPrintBlock}
     <div class="section-label">Terms</div>
     <div class="doc-fields">
       <div class="doc-field"><span>Incoterm:</span><b>${escapeHtml(header.incoterm||'')}</b></div>
@@ -2419,8 +2530,11 @@ function printDocument(stage, header, docData, ref, customer){
 }
 
 // Packing list print — matches Babji Manufacturing layout
-function printPackingList(header, docData, ref, customer){
+function printPackingList(header, docData, ref, customer, routing){
   const items = docData.packingItems || [];
+  // UAE routing: the packing list goes to Saif Al Sahra (the buyer on this leg).
+  const plBuyer = routing !== "direct" ? SAIF_ENTITY : (docData.buyerOverride || customer || "");
+  const plBuyerAddr = routing !== "direct" ? ((getSettings().exporterAddresses||{})[SAIF_ENTITY] || "") : (header.buyerAddress || "");
   let totPacked=0, totUOM=0, totCBM=0, totNet=0, totGross=0;
   const rows = items.map((it, i) => {
     const up = parseFloat(it.unitPacked)||0;
@@ -2430,7 +2544,6 @@ function printPackingList(header, docData, ref, customer){
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const uom = up*tp, cbm = cbmPerCtn*tp, net = netPerCtn*tp, gross = grossPerCtn*tp;
     totPacked += tp; totUOM += uom; totCBM += cbm; totNet += net; totGross += gross;
-    const dims = (L&&W&&H) ? `${it.lengthCm}×${it.widthCm}×${it.heightCm}` : '';
     return `<tr>
       <td style="text-align:center">${i+1}</td>
       <td style="text-align:center">${escapeHtml(it.hsCode)}</td>
@@ -2440,7 +2553,6 @@ function printPackingList(header, docData, ref, customer){
       <td style="text-align:center">${escapeHtml(it.packingType)}</td>
       <td style="text-align:center">${tp ? tp.toLocaleString() : ''}</td>
       <td style="text-align:center">${uom ? uom.toLocaleString() : ''}</td>
-      <td style="text-align:center">${dims}</td>
       <td style="text-align:center">${cbm ? cbm.toFixed(2) : ''}</td>
       <td style="text-align:center">${net ? net.toFixed(1) : ''}</td>
       <td style="text-align:center">${gross ? gross.toFixed(1) : ''}</td>
@@ -2464,6 +2576,10 @@ function printPackingList(header, docData, ref, customer){
     tfoot td{font-weight:700;}
     .sig{margin-top:70px;width:280px;}
     .sig .line{border-top:1px solid #333;text-align:center;padding-top:5px;font-size:.8rem;}
+    .section-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;color:#888;font-weight:700;margin:18px 0 8px;border-top:1px solid #ddd;padding-top:12px;}
+    .doc-fields{display:flex;flex-wrap:wrap;gap:10px 26px;}
+    .doc-field{font-size:.85rem;display:flex;gap:6px;}
+    .doc-field span{color:#666;}
     .draft-banner{background:#fff4e5;border:2px solid #e0a324;color:#7a5200;text-align:center;font-weight:700;padding:8px;margin-bottom:16px;font-size:.85rem;letter-spacing:.5px;}
     .draft-watermark{position:fixed;top:45%;left:50%;transform:translate(-50%,-50%) rotate(-30deg);font-size:5rem;font-weight:800;color:rgba(200,50,50,0.15);z-index:-1;white-space:nowrap;pointer-events:none;}
     @media print{ body{padding:8mm;} .draft-watermark{position:fixed;} }
@@ -2479,9 +2595,9 @@ function printPackingList(header, docData, ref, customer){
     <div class="meta">
       <div class="block">
         <div><b>To/Buyer:</b></div>
-        <div>${escapeHtml(docData.buyerOverride||customer||'')}</div>
+        <div>${escapeHtml(plBuyer)}</div>
         <div><b>Address:</b></div>
-        <div>${escapeHtml(header.buyerAddress||'')}</div>
+        <div>${escapeHtml(plBuyerAddr)}</div>
       </div>
       <div class="block">
         <div><b>Loading Port:</b></div>
@@ -2493,7 +2609,7 @@ function printPackingList(header, docData, ref, customer){
     <table>
       <thead>
         <tr>
-          <th>Sr.No</th><th>HS CODE</th><th>ITEM DESCRIPTION</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Qty (Packed)</th><th>Total Qty (UOM)</th><th>L×W×H (cm)</th><th>Total CBM</th><th>Net Wt (kg)</th><th>Gross Wt (kg)</th>
+          <th>Sr.No</th><th>HS CODE</th><th>ITEM DESCRIPTION</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Total Qty (Packed)</th><th>Total Qty (UOM)</th><th>Total CBM</th><th>Net Wt (kg)</th><th>Gross Wt (kg)</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -2503,13 +2619,14 @@ function printPackingList(header, docData, ref, customer){
           <td colspan="4" style="text-align:center">Total ${escapeHtml(docData.containerType||'')}</td>
           <td style="text-align:center">${totPacked.toLocaleString()}</td>
           <td style="text-align:center">${totUOM.toLocaleString()}</td>
-          <td></td>
           <td style="text-align:center">${totCBM.toFixed(2)}</td>
           <td style="text-align:center">${totNet.toFixed(1)}</td>
           <td style="text-align:center">${totGross.toFixed(1)}</td>
         </tr>
       </tfoot>
     </table>
+    ${docData.remarks ? `<div class="section-label">Remarks</div><div style="font-size:.85rem;white-space:pre-wrap;">${escapeHtml(docData.remarks)}</div>` : ''}
+    ${(docData.customFields||[]).filter(f=>f.label&&f.value).length ? `<div class="section-label">Additional Info</div><div class="doc-fields">${(docData.customFields||[]).filter(f=>f.label&&f.value).map(f=>`<div class="doc-field"><span>${escapeHtml(f.label)}:</span><b>${escapeHtml(f.value)}</b></div>`).join("")}</div>` : ''}
     <div class="sig">
       <div class="line">${escapeHtml(header.exporterEntity||'BABJI MANUFACTURING').toUpperCase()}</div>
     </div>
@@ -2524,7 +2641,8 @@ function printPackingList(header, docData, ref, customer){
 window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
   saveStageData, addItemRow, removeItemRow, render: renderApp,
-  addPackingItemRow, removePackingItemRow, packingRecalc,
+  addPackingItemRow, removePackingItemRow, packingRecalc, recalcCartonsFromItems,
+  addCustomFieldRow, removeCustomFieldRow,
   stageFileSelected, downloadStageFile,
   duplicateShipment, editShipmentCustomer,
   showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab, showCatalogTab, showDataTab,
