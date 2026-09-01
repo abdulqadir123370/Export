@@ -128,7 +128,34 @@
 <div id="statusMsg" class="status-msg"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
+  onSnapshot, query, orderBy, serverTimestamp, getDocs, writeBatch
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+// Storage (Firebase Storage) intentionally not used — that requires the Blaze billing plan.
+// File uploads (Loading Sheet, B/L Copy, CO Copy) are instead stored directly inside the
+// shipment's Firestore document, capped small enough to fit Firestore's 1 MB per-document limit.
+
+// ---- Firebase config: replace with your project's config ----
+// (GitHub's secret scanner may flag this key - it's a public client config, safe to dismiss)
+const firebaseConfig = {
+  apiKey: "AIzaSyDvbck1_RQCMsQ_SSbhE0Ml_QH0oObxsbU",
+  authDomain: "project-dfe9d48e-1faf-4236-b5c.firebaseapp.com",
+  projectId: "project-dfe9d48e-1faf-4236-b5c",
+  storageBucket: "project-dfe9d48e-1faf-4236-b5c.firebasestorage.app",
+  messagingSenderId: "682886232449",
+  appId: "1:682886232449:web:6dbce5542312399cecd080"
+};
+const CONFIG_IS_PLACEHOLDER = firebaseConfig.apiKey === "YOUR_API_KEY";
+
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+const auth = getAuth(fbApp);
+let authReady = false;
+let authUser = null; // Firebase Auth user object once signed in, else null (shows login screen)
 /* =========================================================================
    STORAGE LAYER
    Currently: browser localStorage, so you can build/test without Firebase.
@@ -139,71 +166,53 @@
    subscription at the bottom with addDoc/updateDoc/deleteDoc/onSnapshot,
    same as the earlier Firebase version of this file.
    ========================================================================= */
-const STORAGE_KEY = "exportDocWorkflow_shipments_v1";
+// ================= FIRESTORE COLLECTIONS =================
+const SHIP_COL = "exportShipments";
+const PROVIDER_COL = "expenseProviders";
+const TXN_COL = "expenseTxns";
+const CONSIGNEE_COL = "consignees";
+const CTXN_COL = "consigneeTxns";
+const CATALOG_COL = "itemCatalog";
+const SETTINGS_DOC_ID = "main";
 
-function localList(){
-  try{ return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
-  catch(e){ console.error(e); return []; }
-}
-function localSave(arr){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
-}
-function localAdd(data){
-  const arr = localList();
-  const id = "sh_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
-  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
-  localSave(arr);
-  return id;
-}
-function applyDotUpdates(obj, updates){
-  for(const key in updates){
-    const parts = key.split(".");
-    let cur = obj;
-    for(let i=0;i<parts.length-1;i++){
-      if(typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) cur[parts[i]] = {};
-      cur = cur[parts[i]];
-    }
-    cur[parts[parts.length-1]] = updates[key];
-  }
-}
-function localUpdate(id, updates){
-  const arr = localList();
-  const idx = arr.findIndex(x => x.id === id);
-  if(idx === -1) return;
-  applyDotUpdates(arr[idx], updates);
-  localSave(arr);
-}
-function localDelete(id){
-  const arr = localList().filter(x => x.id !== id);
-  localSave(arr);
-}
-
-// ---- Service providers + expense ledger (same local-storage pattern as shipments) ----
-const PROVIDERS_KEY = "exportDocWorkflow_providers_v1";
-const TXNS_KEY = "exportDocWorkflow_expenseTxns_v1";
 const PROVIDER_TYPES = ["Clearing Agent", "Freight Forwarder / Shipping Line", "Trucking / Transport", "Port / Terminal", "Bank Charges", "Other"];
 
-function listProviders(){ try{ return JSON.parse(localStorage.getItem(PROVIDERS_KEY)||"[]"); }catch(e){ return []; } }
-function saveProviders(arr){ localStorage.setItem(PROVIDERS_KEY, JSON.stringify(arr)); }
-function addProviderRecord(data){
-  const arr = listProviders();
-  const id = "prov_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
-  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
-  saveProviders(arr);
-  return id;
-}
-function deleteProviderRecord(id){ saveProviders(listProviders().filter(p => p.id !== id)); }
+// In-memory caches, kept live by the onSnapshot listeners set up at the bottom of this script.
+// Every render reads from these directly and synchronously — writes go straight to Firestore,
+// and the matching listener fires (near-instantly, via Firestore's local cache) to refresh them,
+// which then re-renders. This keeps every existing render/calculation function unchanged.
+let txnsCache = [];
+let consigneeTxnsCache = [];
+let catalogCache = [];
+let settingsCache = {};
 
-function listTxns(){ try{ return JSON.parse(localStorage.getItem(TXNS_KEY)||"[]"); }catch(e){ return []; } }
-function saveTxns(arr){ localStorage.setItem(TXNS_KEY, JSON.stringify(arr)); }
-function addTxnRecord(data){
-  const arr = listTxns();
-  const id = "txn_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
-  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
-  saveTxns(arr);
-  return id;
+// ---- Shipments ----
+async function localAdd(data){
+  const docRef = await addDoc(collection(db, SHIP_COL), { ...data, createdAt: serverTimestamp() });
+  return docRef.id;
 }
-function deleteTxnRecord(id){ saveTxns(listTxns().filter(t => t.id !== id)); }
+async function localUpdate(id, updates){
+  // Firestore natively supports "documents.s1" / "stages.s1" dot-path keys as partial merges,
+  // exactly matching how this app already builds its update objects.
+  await updateDoc(doc(db, SHIP_COL, id), updates);
+}
+async function localDelete(id){
+  await deleteDoc(doc(db, SHIP_COL, id));
+}
+
+// ---- Service providers + expense ledger ----
+async function addProviderRecord(data){
+  const docRef = await addDoc(collection(db, PROVIDER_COL), { ...data, createdAt: serverTimestamp() });
+  return docRef.id;
+}
+async function deleteProviderRecord(id){ await deleteDoc(doc(db, PROVIDER_COL, id)); }
+
+function listTxns(){ return txnsCache; }
+async function addTxnRecord(data){
+  const docRef = await addDoc(collection(db, TXN_COL), { ...data, createdAt: serverTimestamp() });
+  return docRef.id;
+}
+async function deleteTxnRecord(id){ await deleteDoc(doc(db, TXN_COL, id)); }
 function txnsForProvider(providerId){
   return listTxns().filter(t => t.providerId === providerId).sort((a,b) => new Date(a.date) - new Date(b.date));
 }
@@ -212,37 +221,24 @@ function providerBalance(providerId){
 }
 
 // ---- Consignees (buyers) receivable ledger ----
-const CONSIGNEES_KEY = "exportDocWorkflow_consignees_v1";
-const CONSIGNEE_TXNS_KEY = "exportDocWorkflow_consigneeTxns_v1";
-
-function listConsignees(){ try{ return JSON.parse(localStorage.getItem(CONSIGNEES_KEY)||"[]"); }catch(e){ return []; } }
-function saveConsignees(arr){ localStorage.setItem(CONSIGNEES_KEY, JSON.stringify(arr)); }
-function addConsigneeRecord(data){
-  const arr = listConsignees();
-  const id = "cons_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
-  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
-  saveConsignees(arr);
-  return id;
+async function addConsigneeRecord(data){
+  const docRef = await addDoc(collection(db, CONSIGNEE_COL), { ...data, createdAt: serverTimestamp() });
+  return docRef.id;
 }
-function deleteConsigneeRecord(id){ saveConsignees(listConsignees().filter(c => c.id !== id)); }
+async function deleteConsigneeRecord(id){ await deleteDoc(doc(db, CONSIGNEE_COL, id)); }
 
-function listConsigneeTxns(){ try{ return JSON.parse(localStorage.getItem(CONSIGNEE_TXNS_KEY)||"[]"); }catch(e){ return []; } }
-function saveConsigneeTxns(arr){ localStorage.setItem(CONSIGNEE_TXNS_KEY, JSON.stringify(arr)); }
-function addConsigneeTxnRecord(data){
-  const arr = listConsigneeTxns();
-  const id = "ctxn_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
-  arr.unshift({ id, ...data, createdAt: new Date().toISOString() });
-  saveConsigneeTxns(arr);
-  return id;
+function listConsigneeTxns(){ return consigneeTxnsCache; }
+async function addConsigneeTxnRecord(data){
+  const docRef = await addDoc(collection(db, CTXN_COL), { ...data, createdAt: serverTimestamp() });
+  return docRef.id;
 }
-function deleteConsigneeTxnRecord(id){ saveConsigneeTxns(listConsigneeTxns().filter(t => t.id !== id)); }
+async function deleteConsigneeTxnRecord(id){ await deleteDoc(doc(db, CTXN_COL, id)); }
 
-// ---- Reusable settings (exporter addresses per entity, bank details) — saved once, pre-filled everywhere ----
-const SETTINGS_KEY = "exportDocWorkflow_settings_v1";
-function getSettings(){
-  try{ return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); }catch(e){ return {}; }
+// ---- Reusable settings (exporter addresses per entity, bank details) — one shared document ----
+function getSettings(){ return settingsCache || {}; }
+async function saveSettings(obj){
+  await setDoc(doc(db, "appSettings", SETTINGS_DOC_ID), obj);
 }
-function saveSettings(obj){ localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj)); }
 function rememberReusables(headerData, extraData){
   const st = getSettings();
   st.exporterAddresses = st.exporterAddresses || {};
@@ -270,36 +266,31 @@ function rememberReusables(headerData, extraData){
       }
     }
   });
-  saveSettings(st);
+  saveSettings(st); // fire-and-forget; settingsCache updates via onSnapshot moments later
   // save buyer address back onto the consignee record so it's known next time
   const s = shipments.find(x => x.id === currentShipId);
   if(s && headerData.buyerAddress){
     const cons = consignees.find(c => c.id === s.consigneeId)
       || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
     if(cons && !cons.address){
-      const arr = listConsignees();
-      const idx = arr.findIndex(c => c.id === cons.id);
-      if(idx >= 0){ arr[idx].address = headerData.buyerAddress; saveConsignees(arr); }
+      updateDoc(doc(db, CONSIGNEE_COL, cons.id), { address: headerData.buyerAddress });
     }
   }
 }
 
 // ---- Item catalog: product master list, auto-learned from packing lists & invoices ----
-const CATALOG_KEY = "exportDocWorkflow_itemCatalog_v1";
-function listCatalog(){ try{ return JSON.parse(localStorage.getItem(CATALOG_KEY)||"[]"); }catch(e){ return []; } }
-function saveCatalog(arr){ localStorage.setItem(CATALOG_KEY, JSON.stringify(arr)); }
-function upsertCatalogItem(data){
+function listCatalog(){ return catalogCache; }
+async function upsertCatalogItem(data){
   if(!data.description) return;
-  const arr = listCatalog();
-  const idx = arr.findIndex(c => c.description.toLowerCase() === data.description.toLowerCase());
-  if(idx >= 0){
-    // update non-empty fields only
+  const existing = catalogCache.find(c => c.description.toLowerCase() === data.description.toLowerCase());
+  if(existing){
+    const updates = {};
     ["hsCode","uom","unitPacked","lengthCm","widthCm","heightCm","netWeightPerCtn","grossWeightPerCtn","unitPrice"].forEach(k => {
-      if(data[k]) arr[idx][k] = data[k];
+      if(data[k]) updates[k] = data[k];
     });
+    if(Object.keys(updates).length) await updateDoc(doc(db, CATALOG_COL, existing.id), updates);
   } else {
-    arr.push({
-      id: "cat_" + Date.now() + "_" + Math.random().toString(36).slice(2,8),
+    await addDoc(collection(db, CATALOG_COL), {
       description: data.description,
       hsCode: data.hsCode || "96039000",
       uom: data.uom || "Pcs",
@@ -309,12 +300,12 @@ function upsertCatalogItem(data){
       heightCm: data.heightCm || "",
       netWeightPerCtn: data.netWeightPerCtn || "",
       grossWeightPerCtn: data.grossWeightPerCtn || "",
-      unitPrice: data.unitPrice || ""
+      unitPrice: data.unitPrice || "",
+      createdAt: serverTimestamp()
     });
   }
-  saveCatalog(arr);
 }
-function deleteCatalogItem(id){ saveCatalog(listCatalog().filter(c => c.id !== id)); }
+async function deleteCatalogItem(id){ await deleteDoc(doc(db, CATALOG_COL, id)); }
 function findCatalogItem(description){
   return listCatalog().find(c => c.description.toLowerCase() === String(description||"").toLowerCase());
 }
@@ -561,17 +552,31 @@ function derivePackingFromItems(s){
   });
 }
 
+// Data now arrives live via Firestore onSnapshot listeners (set up at the bottom of this
+// script), which update shipments/providers/consignees/etc. and call renderApp() themselves.
+// This function is kept (same name) so every existing call site after a write still works —
+// it just re-renders with whatever's currently cached, which Firestore keeps fresh automatically.
 function refreshFromStorage(){
-  shipments = localList();
-  providers = listProviders();
-  consignees = listConsignees();
   renderApp();
 }
 
 // ================= ROOT RENDER =================
 function renderApp(){
   const app = document.getElementById("app");
-  const banner = `<div class="mode-banner">💾 Running on local browser storage right now — data stays on this device/browser only. Hook up Firebase later to sync across devices (see comment at top of the script).</div>`;
+
+  if(CONFIG_IS_PLACEHOLDER){
+    document.getElementById("headerSub").textContent = "Setup required";
+    app.innerHTML = `<div class="mode-banner" style="background:#fff4e5;border-color:#e0a324;color:#7a5200;">⚠ Firebase config is still the placeholder values in the script — nothing will work until you replace <code>firebaseConfig</code> near the top with your real project config.</div>`;
+    return;
+  }
+  if(!authUser){
+    document.getElementById("headerSub").textContent = "Sign in required";
+    app.innerHTML = renderLoginScreen();
+    return;
+  }
+
+  const banner = `<div class="mode-banner">☁ Connected — synced live across every device signed in to this app.</div>`;
+  const authBar = `<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;font-size:.78rem;color:var(--muted);margin-bottom:10px;">Signed in as <b>${escapeHtml(authUser.email||'')}</b> <button onclick="App.logout()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 12px;cursor:pointer;font-size:.76rem;color:var(--text);">Logout</button></div>`;
   const tabs = `
     <div class="top-tabs">
       <button class="top-tab ${(view==='list'||view==='detail')?'active':''}" onclick="App.showShipmentsTab()">📦 Shipments</button>
@@ -584,39 +589,85 @@ function renderApp(){
 
   if(view === "list"){
     document.getElementById("headerSub").textContent = "Fill each stage's form to generate its document";
-    app.innerHTML = banner + tabs + renderListView();
+    app.innerHTML = banner + authBar + tabs + renderListView();
   } else if(view === "detail"){
     const s = shipments.find(x => x.id === currentShipId);
     if(!s){ view = "list"; renderApp(); return; }
     document.getElementById("headerSub").textContent = s.ref + (s.customer ? " — " + s.customer : "");
-    app.innerHTML = banner + tabs + renderDetailView(s);
+    app.innerHTML = banner + authBar + tabs + renderDetailView(s);
   } else if(view === "masterLedger"){
     document.getElementById("headerSub").textContent = "All expense and consignee transactions in one place";
-    app.innerHTML = banner + tabs + renderMasterLedgerView();
+    app.innerHTML = banner + authBar + tabs + renderMasterLedgerView();
   } else if(view === "expenses"){
     document.getElementById("headerSub").textContent = "Service provider expense ledgers";
-    app.innerHTML = banner + tabs + renderExpensesView();
+    app.innerHTML = banner + authBar + tabs + renderExpensesView();
   } else if(view === "ledger"){
     const p = providers.find(x => x.id === currentProviderId);
     if(!p){ view = "expenses"; renderApp(); return; }
     document.getElementById("headerSub").textContent = p.name + " — ledger";
-    app.innerHTML = banner + tabs + renderLedgerView(p);
+    app.innerHTML = banner + authBar + tabs + renderLedgerView(p);
   } else if(view === "consignees"){
     document.getElementById("headerSub").textContent = "Consignee / buyer receivable ledgers";
-    app.innerHTML = banner + tabs + renderConsigneesView();
+    app.innerHTML = banner + authBar + tabs + renderConsigneesView();
   } else if(view === "consigneeLedger"){
     const c = consignees.find(x => x.id === currentConsigneeId);
     if(!c){ view = "consignees"; renderApp(); return; }
     document.getElementById("headerSub").textContent = c.name + " — ledger";
-    app.innerHTML = banner + tabs + renderConsigneeLedgerView(c);
+    app.innerHTML = banner + authBar + tabs + renderConsigneeLedgerView(c);
   } else if(view === "catalog"){
     document.getElementById("headerSub").textContent = "Product master list — auto-fills packing lists and invoices";
-    app.innerHTML = banner + tabs + renderCatalogView();
+    app.innerHTML = banner + authBar + tabs + renderCatalogView();
   } else if(view === "data"){
     document.getElementById("headerSub").textContent = "Import old Excel records · backup & restore";
-    app.innerHTML = banner + tabs + renderDataView();
+    app.innerHTML = banner + authBar + tabs + renderDataView();
   }
 }
+// ================= LOGIN SCREEN =================
+function renderLoginScreen(){
+  return `
+    <div style="max-width:380px;margin:60px auto;background:#fff;border:1px solid var(--border);border-radius:12px;padding:28px;box-shadow:0 1px 3px rgba(0,0,0,.05);">
+      <h2 style="margin:0 0 4px;color:var(--navy);font-size:1.2rem;">Sign in</h2>
+      <div style="font-size:.82rem;color:var(--muted);margin-bottom:20px;">Export Document Workflow — authorized access only</div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:.76rem;color:var(--muted);font-weight:600;">Email</label>
+        <input id="loginEmail" type="text" placeholder="you@royalplastics.local" autocomplete="username"
+          style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;"
+          onkeydown="if(event.key==='Enter') App.loginSubmit()">
+      </div>
+      <div style="margin-bottom:8px;">
+        <label style="font-size:.76rem;color:var(--muted);font-weight:600;">Password</label>
+        <input id="loginPassword" type="password" autocomplete="current-password"
+          style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;margin-top:4px;box-sizing:border-box;"
+          onkeydown="if(event.key==='Enter') App.loginSubmit()">
+      </div>
+      <div id="loginError" style="color:#c0392b;font-size:.8rem;min-height:18px;margin-bottom:10px;"></div>
+      <button onclick="App.loginSubmit()" style="width:100%;background:var(--navy);color:#fff;border:none;padding:11px;border-radius:8px;font-size:.92rem;font-weight:600;cursor:pointer;">Sign In</button>
+      <div style="font-size:.74rem;color:var(--muted);margin-top:16px;">Don't have an account? Ask whoever manages this app to add you in the Firebase Console (Authentication → Users).</div>
+    </div>`;
+}
+async function loginSubmit(){
+  const emailEl = document.getElementById("loginEmail");
+  const passEl = document.getElementById("loginPassword");
+  const errEl = document.getElementById("loginError");
+  const email = emailEl.value.trim();
+  const password = passEl.value;
+  errEl.textContent = "";
+  if(!email || !password){ errEl.textContent = "Enter both email and password."; return; }
+  try{
+    await signInWithEmailAndPassword(auth, email, password);
+    // onAuthStateChanged picks this up and re-renders into the app automatically
+  }catch(err){
+    console.error(err);
+    const friendly = ["auth/invalid-credential","auth/wrong-password","auth/user-not-found","auth/invalid-email"].includes(err.code)
+      ? "Incorrect email or password."
+      : err.message;
+    errEl.textContent = friendly;
+  }
+}
+function logout(){
+  signOut(auth);
+}
+
 function showShipmentsTab(){ view = "list"; currentShipId = null; renderApp(); }
 function showLedgerTab(){ view = "masterLedger"; renderApp(); }
 function showCatalogTab(){ view = "catalog"; renderApp(); }
@@ -1159,7 +1210,15 @@ function itemCatalogFill(i){
 }
 
 // ================= DATA TAB: BACKUP / RESTORE + EXCEL IMPORT =================
-const ALL_STORAGE_KEYS = [STORAGE_KEY, PROVIDERS_KEY, TXNS_KEY, CONSIGNEES_KEY, CONSIGNEE_TXNS_KEY, SETTINGS_KEY, CATALOG_KEY];
+// Collections backed up/restored as a set (settings is a single doc, handled separately below).
+const BACKUP_COLLECTIONS = [
+  { key: "shipments", col: SHIP_COL },
+  { key: "providers", col: PROVIDER_COL },
+  { key: "txns", col: TXN_COL },
+  { key: "consignees", col: CONSIGNEE_COL },
+  { key: "consigneeTxns", col: CTXN_COL },
+  { key: "catalog", col: CATALOG_COL },
+];
 let importState = null; // { rows, headers, target, partyId }
 
 function renderDataView(){
@@ -1237,7 +1296,7 @@ function renderDataView(){
 
     <div class="add-card">
       <h2>💾 Backup & Restore</h2>
-      <div style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">Everything lives in this browser only. Take a backup regularly — one "clear browsing data" wipes it all.</div>
+      <div style="font-size:.82rem;color:var(--muted);margin-bottom:12px;">Data now lives in the cloud and syncs across every device. Still worth taking a backup occasionally in case of accidental deletes.</div>
       <div class="add-row">
         <button onclick="App.downloadBackup()" style="background:var(--green);">⬇ Download Full Backup (JSON)</button>
         <label style="background:var(--navy);color:#fff;padding:10px 18px;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;">
@@ -1413,8 +1472,13 @@ function runImport(){
 
 // ---------- Backup / Restore ----------
 function downloadBackup(){
-  const backup = { app:"ExportDocWorkflow", exportedAt: new Date().toISOString(), data:{} };
-  ALL_STORAGE_KEYS.forEach(k => backup.data[k] = localStorage.getItem(k));
+  const backup = {
+    app: "ExportDocWorkflow", exportedAt: new Date().toISOString(),
+    data: {
+      shipments, providers, txns: txnsCache, consignees, consigneeTxns: consigneeTxnsCache,
+      catalog: catalogCache, settings: settingsCache
+    }
+  };
   const blob = new Blob([JSON.stringify(backup)], { type:"application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -1422,19 +1486,41 @@ function downloadBackup(){
   document.body.appendChild(a); a.click(); a.remove();
   toast("Backup downloaded");
 }
-function restoreBackup(inputEl){
+async function restoreBackup(inputEl){
   const file = inputEl.files && inputEl.files[0];
   if(!file) return;
-  if(!confirm("Restoring will REPLACE all current data in this browser with the backup. Continue?")){ inputEl.value=""; return; }
+  if(!confirm("Restoring will REPLACE all current cloud data with the backup, for everyone using this app. Larger backups can take a minute. Continue?")){ inputEl.value=""; return; }
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try{
       const backup = JSON.parse(e.target.result);
       if(!backup.data){ toast("Not a valid backup file", true); return; }
-      ALL_STORAGE_KEYS.forEach(k => {
-        if(backup.data[k] != null) localStorage.setItem(k, backup.data[k]);
-      });
-      refreshFromStorage();
+      toast("Restoring — please wait...");
+      const keyToCollection = { shipments: SHIP_COL, providers: PROVIDER_COL, txns: TXN_COL, consignees: CONSIGNEE_COL, consigneeTxns: CTXN_COL, catalog: CATALOG_COL };
+      for(const [dataKey, col] of Object.entries(keyToCollection)){
+        const records = backup.data[dataKey];
+        if(!Array.isArray(records)) continue;
+        // wipe everything currently in this collection first
+        const existingSnap = await getDocs(collection(db, col));
+        let batch = writeBatch(db), opCount = 0;
+        for(const d of existingSnap.docs){
+          batch.delete(d.ref);
+          if(++opCount >= 450){ await batch.commit(); batch = writeBatch(db); opCount = 0; }
+        }
+        if(opCount > 0) await batch.commit();
+        // re-create from the backup, keeping original IDs so cross-references (providerId, consigneeId, shipmentRef) stay intact
+        batch = writeBatch(db); opCount = 0;
+        for(const rec of records){
+          const { id, ...fields } = rec;
+          const ref = id ? doc(db, col, id) : doc(collection(db, col));
+          batch.set(ref, fields);
+          if(++opCount >= 450){ await batch.commit(); batch = writeBatch(db); opCount = 0; }
+        }
+        if(opCount > 0) await batch.commit();
+      }
+      if(backup.data.settings){
+        await setDoc(doc(db, "appSettings", SETTINGS_DOC_ID), backup.data.settings);
+      }
       toast("Backup restored");
     }catch(err){
       console.error(err);
@@ -1828,7 +1914,7 @@ function renderStagePage(s, stageKey){
     <div class="section-title">${escapeHtml(stage.label)} File</div>
     ${existing}
     <input type="file" id="stageFileInput" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv" onchange="App.stageFileSelected(this)" style="font-size:.85rem;">
-    <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">Upload the ${escapeHtml(stage.label.toLowerCase())} (scanned PDF, photo, or Excel/CSV). It will be stored with this shipment.</div>`;
+    <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">Upload the ${escapeHtml(stage.label.toLowerCase())} (scanned PDF, photo, or Excel/CSV). Keep it under ~200 KB — a low-res photo or a compressed PDF works well; large hi-res scans usually won't fit.</div>`;
   }
 
   const applicable = stagesForShipment(s);
@@ -2058,8 +2144,11 @@ function removePackingItemRow(i){
 function stageFileSelected(inputEl){
   const file = inputEl.files && inputEl.files[0];
   if(!file) return;
-  if(file.size > 3 * 1024 * 1024){
-    toast("File too large for local storage (max ~3 MB). Compress or simplify the sheet.", true);
+  const MAX_RAW = 200 * 1024; // ~200 KB raw per file — a shipment can hold up to 3 such files
+                                // (Loading Sheet, B/L Copy, CO Copy) plus all its other data within
+                                // Firestore's 1 MB per-document limit, so each file stays small.
+  if(file.size > MAX_RAW){
+    toast(`File too large (max ~200 KB). Try a lower-res photo/scan, or compress the PDF — plenty of free tools do this in seconds.`, true);
     inputEl.value = "";
     return;
   }
@@ -2084,7 +2173,7 @@ function downloadStageFile(stageKey){
 }
 
 // ---------- Save ----------
-function saveStageData(shouldPrint, goToStageKey){
+async function saveStageData(shouldPrint, goToStageKey){
   if(!currentShipId) return;
   const s = shipments.find(x => x.id === currentShipId);
   const stage = STAGES.find(x => x.key === currentStageKey);
@@ -2144,7 +2233,7 @@ function saveStageData(shouldPrint, goToStageKey){
 
     updates[`documents.${currentStageKey}`] = docData;
     updates[`stages.${currentStageKey}`] = { done:true, completedAt: new Date().toISOString() };
-    localUpdate(currentShipId, updates);
+    await localUpdate(currentShipId, updates);
     rememberReusables(headerData, extraData);
 
     // Catalog auto-learn
@@ -2181,14 +2270,14 @@ function saveStageData(shouldPrint, goToStageKey){
     }
 
     pendingUploadFile = null;
-    toast(shouldPrint ? "Saved — opening print view" : "Saved");
+    if(!(currentStageKey === "s5")) toast(shouldPrint ? "Saved — opening print view" : "Saved");
     if(shouldPrint) printDocument(stage, headerData, docData, s.ref, s.customer);
     if(goToStageKey){ currentStageKey = goToStageKey; }
     refreshFromStorage();
   }catch(err){
     console.error(err);
-    if(String(err.name).includes("QuotaExceeded") || String(err.message).toLowerCase().includes("quota")){
-      toast("Browser storage is full — the uploaded file may be too large. Try a smaller file.", true);
+    if(String(err.message||"").toLowerCase().includes("longer than") || String(err.message||"").toLowerCase().includes("exceeds the maximum")){
+      toast("This shipment's data is too large to save (Firestore's 1MB-per-document limit) — likely too many files attached. Try removing or compressing one of the uploaded files.", true);
     } else {
       toast("Error saving document: " + err.message, true);
     }
@@ -2444,9 +2533,72 @@ window.App = {
   downloadBackup, restoreBackup, exportLedgerExcel, whatsappReminder, shipperChanged,
   addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
   addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn,
-  openQuickExpenseForm, openQuickConsigneeForm, closeQuickForms, quickAddExpenseSubmit, quickAddConsigneeSubmit
+  openQuickExpenseForm, openQuickConsigneeForm, closeQuickForms, quickAddExpenseSubmit, quickAddConsigneeSubmit,
+  loginSubmit, logout
 };
-refreshFromStorage();
+
+// Surface any otherwise-silent write failure (e.g. Firestore security rules not set up yet)
+window.addEventListener("unhandledrejection", (event) => {
+  console.error("Unhandled error:", event.reason);
+  const msg = (event.reason && event.reason.message) ? event.reason.message : "something went wrong talking to the cloud";
+  toast("Error: " + msg, true);
+});
+
+// ================= FIREBASE BOOTSTRAP: AUTH + LIVE LISTENERS =================
+function attachLiveListeners(){
+  onSnapshot(query(collection(db, SHIP_COL), orderBy("createdAt", "desc")), snap => {
+    shipments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (shipments): " + err.message, true); });
+
+  onSnapshot(collection(db, PROVIDER_COL), snap => {
+    providers = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a,b) => (b.createdAt?.toMillis?.()||0) - (a.createdAt?.toMillis?.()||0));
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (providers): " + err.message, true); });
+
+  onSnapshot(collection(db, TXN_COL), snap => {
+    txnsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (expenses): " + err.message, true); });
+
+  onSnapshot(collection(db, CONSIGNEE_COL), snap => {
+    consignees = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a,b) => (b.createdAt?.toMillis?.()||0) - (a.createdAt?.toMillis?.()||0));
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (consignees): " + err.message, true); });
+
+  onSnapshot(collection(db, CTXN_COL), snap => {
+    consigneeTxnsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (receivables): " + err.message, true); });
+
+  onSnapshot(collection(db, CATALOG_COL), snap => {
+    catalogCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (catalog): " + err.message, true); });
+
+  onSnapshot(doc(db, "appSettings", SETTINGS_DOC_ID), snap => {
+    settingsCache = snap.exists() ? snap.data() : {};
+    renderApp();
+  }, err => { console.error(err); toast("Sync error (settings): " + err.message, true); });
+}
+
+if(CONFIG_IS_PLACEHOLDER){
+  renderApp(); // show the "replace firebaseConfig" banner immediately, no auth attempt
+} else {
+  onAuthStateChanged(auth, user => {
+    authUser = user;
+    if(!user){
+      authReady = false;
+      renderApp(); // shows the login screen
+      return;
+    }
+    authReady = true;
+    attachLiveListeners();
+    renderApp();
+  });
+}
 </script>
 </body>
 </html>
