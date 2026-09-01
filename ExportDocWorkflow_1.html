@@ -397,6 +397,7 @@ const STAGES = [
     extraFields:[
       {name:"invoiceNo",label:"Invoice No",type:"text"},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
+      ...BANK_FIELDS,
     ]},
   { key:"s5", num:5, label:"Commercial Invoice (Bank)", short:"Comm. Invoice (Bank)", color:"var(--amber)", hasItems:true,
     extraFields:[
@@ -525,7 +526,7 @@ function peekNextInvoiceNo(){
 // Proforma documents (s1, s10) are quotations, not real invoices, so they never draw from it.
 const REAL_INVOICE_STAGES = ["s4","s5","s6","s11"];
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
-function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", lengthCm:"", widthCm:"", heightCm:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
+function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", qty:"", lengthCm:"", widthCm:"", heightCm:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
 // Build packing list rows from the invoice items + catalog knowledge, so nothing is typed twice
 function derivePackingFromItems(s){
   const src = (s.items || []).filter(it => (it.description||"").trim());
@@ -535,6 +536,9 @@ function derivePackingFromItems(s){
     const unitPacked = cat.unitPacked || "";
     const qty = parseFloat(it.qty) || 0;
     const perCtn = parseFloat(unitPacked) || 0;
+    // Cartons round UP (can't ship a fraction of a carton) — but the actual quantity shipped
+    // stays exactly what was invoiced, not cartons × per-carton (which would overstate it,
+    // since the last carton of an uneven order is only partially full).
     const totalPacked = (qty && perCtn) ? String(Math.ceil(qty / perCtn)) : "";
     return {
       hsCode: it.hsCode || cat.hsCode || "96039000",
@@ -543,6 +547,7 @@ function derivePackingFromItems(s){
       unitPacked,
       packingType: "Carton",
       totalPacked,
+      qty: it.qty || "",
       lengthCm: cat.lengthCm || "",
       widthCm: cat.widthCm || "",
       heightCm: cat.heightCm || "",
@@ -2047,12 +2052,10 @@ function removeItemRow(i){
 function renderPackingItemsEditor(){
   const catalogOptions = listCatalog().map(c => `<option value="${escapeHtml(c.description)}">`).join("");
   const rows = packingItemRows.map((it, i) => {
-    const unitPacked = parseFloat(it.unitPacked)||0;
     const totalPacked = parseFloat(it.totalPacked)||0;
     const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
     const cbmPerCtn = (L*W*H) / 1000000; // cm3 -> m3
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
-    const totalUOM = unitPacked * totalPacked;
     const totalCBM = cbmPerCtn * totalPacked;
     const totalNet = netPerCtn * totalPacked;
     const totalGross = grossPerCtn * totalPacked;
@@ -2070,7 +2073,7 @@ function renderPackingItemsEditor(){
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbmctn="${i}">${cbmPerCtn ? cbmPerCtn.toFixed(4) : ''}</td>
       <td><input data-pitem="netWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.netWeightPerCtn)}" placeholder="Net kg" style="width:65px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="grossWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.grossWeightPerCtn)}" placeholder="Gross kg" style="width:70px;" oninput="App.packingRecalc()"></td>
-      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-uom="${i}">${totalUOM ? totalUOM.toLocaleString() : ''}</td>
+      <td><input data-pitem="qty" data-idx="${i}" value="${escapeHtml(it.qty)}" placeholder="Actual qty" style="width:80px;" oninput="App.packingRecalc()" title="Actual quantity shipped — matches the invoice, independent of carton rounding"></td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbm="${i}">${totalCBM ? totalCBM.toFixed(2) : ''}</td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-net="${i}">${totalNet ? totalNet.toFixed(1) : ''}</td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-gross="${i}">${totalGross ? totalGross.toFixed(1) : ''}</td>
@@ -2104,13 +2107,12 @@ function renderPackingItemsEditor(){
 function packingTotals(){
   let packed=0, uom=0, cbm=0, net=0, gross=0;
   packingItemRows.forEach(it => {
-    const up = parseFloat(it.unitPacked)||0;
     const tp = parseFloat(it.totalPacked)||0;
     const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
     const cbmPerCtn = (L*W*H) / 1000000;
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     packed += tp;
-    uom += up*tp;
+    uom += parseFloat(it.qty)||0;
     cbm += cbmPerCtn*tp;
     net += netPerCtn*tp;
     gross += grossPerCtn*tp;
@@ -2127,18 +2129,15 @@ function syncPackingRowsFromDom(){
 function packingRecalc(){
   syncPackingRowsFromDom();
   packingItemRows.forEach((it, i) => {
-    const up = parseFloat(it.unitPacked)||0;
     const tp = parseFloat(it.totalPacked)||0;
     const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
     const cbmPerCtn = (L*W*H) / 1000000;
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const cbmCtnEl = document.querySelector(`[data-calc-cbmctn="${i}"]`);
-    const uomEl = document.querySelector(`[data-calc-uom="${i}"]`);
     const cbmEl = document.querySelector(`[data-calc-cbm="${i}"]`);
     const netEl = document.querySelector(`[data-calc-net="${i}"]`);
     const grossEl = document.querySelector(`[data-calc-gross="${i}"]`);
     if(cbmCtnEl) cbmCtnEl.textContent = cbmPerCtn ? cbmPerCtn.toFixed(4) : '';
-    if(uomEl) uomEl.textContent = (up*tp) ? (up*tp).toLocaleString() : '';
     if(cbmEl) cbmEl.textContent = (cbmPerCtn*tp) ? (cbmPerCtn*tp).toFixed(2) : '';
     if(netEl) netEl.textContent = (netPerCtn*tp) ? (netPerCtn*tp).toFixed(1) : '';
     if(grossEl) grossEl.textContent = (grossPerCtn*tp) ? (grossPerCtn*tp).toFixed(1) : '';
@@ -2169,6 +2168,7 @@ function recalcCartonsFromItems(){
     const perCtn = parseFloat(row.unitPacked)||0;
     if(qty && perCtn){
       row.totalPacked = String(Math.ceil(qty / perCtn));
+      row.qty = invItem.qty;
       changed++;
     }
   });
@@ -2537,12 +2537,12 @@ function printPackingList(header, docData, ref, customer, routing){
   const plBuyerAddr = routing !== "direct" ? ((getSettings().exporterAddresses||{})[SAIF_ENTITY] || "") : (header.buyerAddress || "");
   let totPacked=0, totUOM=0, totCBM=0, totNet=0, totGross=0;
   const rows = items.map((it, i) => {
-    const up = parseFloat(it.unitPacked)||0;
     const tp = parseFloat(it.totalPacked)||0;
+    const uom = parseFloat(it.qty)||0; // actual quantity shipped, not cartons × per-carton capacity
     const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
     const cbmPerCtn = (L*W*H)/1000000;
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
-    const uom = up*tp, cbm = cbmPerCtn*tp, net = netPerCtn*tp, gross = grossPerCtn*tp;
+    const cbm = cbmPerCtn*tp, net = netPerCtn*tp, gross = grossPerCtn*tp;
     totPacked += tp; totUOM += uom; totCBM += cbm; totNet += net; totGross += gross;
     return `<tr>
       <td style="text-align:center">${i+1}</td>
