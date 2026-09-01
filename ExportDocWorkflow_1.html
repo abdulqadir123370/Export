@@ -2545,43 +2545,52 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 // ================= FIREBASE BOOTSTRAP: AUTH + LIVE LISTENERS =================
+let activeListenerUnsubs = [];
+
 function attachLiveListeners(){
-  onSnapshot(query(collection(db, SHIP_COL), orderBy("createdAt", "desc")), snap => {
+  activeListenerUnsubs.push(onSnapshot(query(collection(db, SHIP_COL), orderBy("createdAt", "desc")), snap => {
     shipments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderApp();
-  }, err => { console.error(err); toast("Sync error (shipments): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (shipments): " + err.message, true); }));
 
-  onSnapshot(collection(db, PROVIDER_COL), snap => {
+  activeListenerUnsubs.push(onSnapshot(collection(db, PROVIDER_COL), snap => {
     providers = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a,b) => (b.createdAt?.toMillis?.()||0) - (a.createdAt?.toMillis?.()||0));
     renderApp();
-  }, err => { console.error(err); toast("Sync error (providers): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (providers): " + err.message, true); }));
 
-  onSnapshot(collection(db, TXN_COL), snap => {
+  activeListenerUnsubs.push(onSnapshot(collection(db, TXN_COL), snap => {
     txnsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderApp();
-  }, err => { console.error(err); toast("Sync error (expenses): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (expenses): " + err.message, true); }));
 
-  onSnapshot(collection(db, CONSIGNEE_COL), snap => {
+  activeListenerUnsubs.push(onSnapshot(collection(db, CONSIGNEE_COL), snap => {
     consignees = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a,b) => (b.createdAt?.toMillis?.()||0) - (a.createdAt?.toMillis?.()||0));
     renderApp();
-  }, err => { console.error(err); toast("Sync error (consignees): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (consignees): " + err.message, true); }));
 
-  onSnapshot(collection(db, CTXN_COL), snap => {
+  activeListenerUnsubs.push(onSnapshot(collection(db, CTXN_COL), snap => {
     consigneeTxnsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderApp();
-  }, err => { console.error(err); toast("Sync error (receivables): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (receivables): " + err.message, true); }));
 
-  onSnapshot(collection(db, CATALOG_COL), snap => {
+  activeListenerUnsubs.push(onSnapshot(collection(db, CATALOG_COL), snap => {
     catalogCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderApp();
-  }, err => { console.error(err); toast("Sync error (catalog): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (catalog): " + err.message, true); }));
 
-  onSnapshot(doc(db, "appSettings", SETTINGS_DOC_ID), snap => {
+  activeListenerUnsubs.push(onSnapshot(doc(db, "appSettings", SETTINGS_DOC_ID), snap => {
     settingsCache = snap.exists() ? snap.data() : {};
     renderApp();
-  }, err => { console.error(err); toast("Sync error (settings): " + err.message, true); });
+  }, err => { console.error(err); if(authUser) toast("Sync error (settings): " + err.message, true); }));
+}
+
+// Properly stop every live listener — called on logout so they don't linger and fail
+// against the now-signed-out session (which was showing a scary but harmless error).
+function detachLiveListeners(){
+  activeListenerUnsubs.forEach(unsub => { try{ unsub(); }catch(e){} });
+  activeListenerUnsubs = [];
 }
 
 if(CONFIG_IS_PLACEHOLDER){
@@ -2591,6 +2600,7 @@ if(CONFIG_IS_PLACEHOLDER){
     authUser = user;
     if(!user){
       authReady = false;
+      detachLiveListeners();
       renderApp(); // shows the login screen
       return;
     }
