@@ -526,7 +526,7 @@ function peekNextInvoiceNo(){
 // Proforma documents (s1, s10) are quotations, not real invoices, so they never draw from it.
 const REAL_INVOICE_STAGES = ["s4","s5","s6","s11"];
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
-function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", qty:"", lengthIn:"", widthIn:"", heightIn:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
+function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", qty:"", totalCBM:"", lengthIn:"", widthIn:"", heightIn:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
 // Build packing list rows from the invoice items + catalog knowledge, so nothing is typed twice
 function derivePackingFromItems(s){
   const src = (s.items || []).filter(it => (it.description||"").trim());
@@ -2056,13 +2056,13 @@ function renderPackingItemsEditor(){
     const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
     const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3 (1 in3 = 16.387064 cm3)
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
-    const totalCBM = cbmPerCtn * totalPacked;
     const totalNet = netPerCtn * totalPacked;
     const totalGross = grossPerCtn * totalPacked;
-    // Qty defaults to Cartons × Unit Packed when never explicitly set (e.g. rows added by hand,
-    // or where the description didn't match an invoice item) — so the total is never blank/zero.
-    // Still fully editable to correct for a partially-filled last carton.
+    // Qty and Total CBM both default to a computed figure when never explicitly set, but stay
+    // fully editable — same pattern, since real-world packing sometimes needs a manual override
+    // (a partially-filled last carton, an actual measured volume that differs slightly, etc.).
     const qtyDisplay = (it.qty !== undefined && it.qty !== "") ? it.qty : ((parseFloat(it.unitPacked)||0) * totalPacked || "");
+    const cbmDisplay = (it.totalCBM !== undefined && it.totalCBM !== "") ? it.totalCBM : ((cbmPerCtn * totalPacked) ? (cbmPerCtn*totalPacked).toFixed(2) : "");
     return `
     <tr>
       <td><input data-pitem="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code" style="width:85px;"></td>
@@ -2078,7 +2078,7 @@ function renderPackingItemsEditor(){
       <td><input data-pitem="netWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.netWeightPerCtn)}" placeholder="Net kg" style="width:65px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="grossWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.grossWeightPerCtn)}" placeholder="Gross kg" style="width:70px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="qty" data-idx="${i}" value="${escapeHtml(qtyDisplay)}" placeholder="Actual qty" style="width:80px;" oninput="App.packingRecalc()" title="Actual quantity shipped — matches the invoice, independent of carton rounding"></td>
-      <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbm="${i}">${totalCBM ? totalCBM.toFixed(2) : ''}</td>
+      <td><input data-pitem="totalCBM" data-idx="${i}" value="${escapeHtml(cbmDisplay)}" placeholder="Total CBM" style="width:75px;" oninput="App.packingRecalc()" title="Defaults to CBM/Ctn × Cartons — editable if the actual figure differs"></td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-net="${i}">${totalNet ? totalNet.toFixed(1) : ''}</td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-gross="${i}">${totalGross ? totalGross.toFixed(1) : ''}</td>
       <td><button class="rm" onclick="App.removePackingItemRow(${i})">✕</button></td>
@@ -2097,6 +2097,7 @@ function renderPackingItemsEditor(){
         <td colspan="5" style="text-align:right;padding:7px 8px;">Totals</td>
         <td style="padding:7px 8px;" id="packingTotalPacked">${totals.packed.toLocaleString()}</td>
         <td colspan="4"></td>
+        <td colspan="2"></td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalUOM">${totals.uom.toLocaleString()}</td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalCBM">${totals.cbm.toFixed(2)}</td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalNet">${totals.net.toFixed(1)}</td>
@@ -2117,7 +2118,7 @@ function packingTotals(){
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     packed += tp;
     uom += parseFloat(it.qty) || ((parseFloat(it.unitPacked)||0) * tp);
-    cbm += cbmPerCtn*tp;
+    cbm += parseFloat(it.totalCBM) || (cbmPerCtn*tp);
     net += netPerCtn*tp;
     gross += grossPerCtn*tp;
   });
@@ -2138,11 +2139,9 @@ function packingRecalc(){
     const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const cbmCtnEl = document.querySelector(`[data-calc-cbmctn="${i}"]`);
-    const cbmEl = document.querySelector(`[data-calc-cbm="${i}"]`);
     const netEl = document.querySelector(`[data-calc-net="${i}"]`);
     const grossEl = document.querySelector(`[data-calc-gross="${i}"]`);
     if(cbmCtnEl) cbmCtnEl.textContent = cbmPerCtn ? cbmPerCtn.toFixed(4) : '';
-    if(cbmEl) cbmEl.textContent = (cbmPerCtn*tp) ? (cbmPerCtn*tp).toFixed(2) : '';
     if(netEl) netEl.textContent = (netPerCtn*tp) ? (netPerCtn*tp).toFixed(1) : '';
     if(grossEl) grossEl.textContent = (grossPerCtn*tp) ? (grossPerCtn*tp).toFixed(1) : '';
   });
@@ -2546,7 +2545,7 @@ function printPackingList(header, docData, ref, customer, routing){
     const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
     const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
-    const cbm = cbmPerCtn*tp, net = netPerCtn*tp, gross = grossPerCtn*tp;
+    const cbm = parseFloat(it.totalCBM) || (cbmPerCtn*tp), net = netPerCtn*tp, gross = grossPerCtn*tp;
     totPacked += tp; totUOM += uom; totCBM += cbm; totNet += net; totGross += gross;
     return `<tr>
       <td style="text-align:center">${i+1}</td>
