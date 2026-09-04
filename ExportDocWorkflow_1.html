@@ -285,7 +285,7 @@ async function upsertCatalogItem(data){
   const existing = catalogCache.find(c => c.description.toLowerCase() === data.description.toLowerCase());
   if(existing){
     const updates = {};
-    ["hsCode","uom","unitPacked","lengthCm","widthCm","heightCm","netWeightPerCtn","grossWeightPerCtn","unitPrice"].forEach(k => {
+    ["hsCode","uom","unitPacked","lengthIn","widthIn","heightIn","netWeightPerCtn","grossWeightPerCtn","unitPrice"].forEach(k => {
       if(data[k]) updates[k] = data[k];
     });
     if(Object.keys(updates).length) await updateDoc(doc(db, CATALOG_COL, existing.id), updates);
@@ -295,9 +295,9 @@ async function upsertCatalogItem(data){
       hsCode: data.hsCode || "96039000",
       uom: data.uom || "Pcs",
       unitPacked: data.unitPacked || "",
-      lengthCm: data.lengthCm || "",
-      widthCm: data.widthCm || "",
-      heightCm: data.heightCm || "",
+      lengthIn: data.lengthIn || "",
+      widthIn: data.widthIn || "",
+      heightIn: data.heightIn || "",
       netWeightPerCtn: data.netWeightPerCtn || "",
       grossWeightPerCtn: data.grossWeightPerCtn || "",
       unitPrice: data.unitPrice || "",
@@ -526,7 +526,7 @@ function peekNextInvoiceNo(){
 // Proforma documents (s1, s10) are quotations, not real invoices, so they never draw from it.
 const REAL_INVOICE_STAGES = ["s4","s5","s6","s11"];
 function emptyItem(){ return { description:"", hsCode:"", qty:"", unit:"", unitPrice:"" }; }
-function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", qty:"", lengthCm:"", widthCm:"", heightCm:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
+function emptyPackingItem(){ return { hsCode:"96039000", description:"", uom:"Pcs", unitPacked:"", packingType:"Carton", totalPacked:"", qty:"", lengthIn:"", widthIn:"", heightIn:"", netWeightPerCtn:"", grossWeightPerCtn:"" }; }
 // Build packing list rows from the invoice items + catalog knowledge, so nothing is typed twice
 function derivePackingFromItems(s){
   const src = (s.items || []).filter(it => (it.description||"").trim());
@@ -548,9 +548,9 @@ function derivePackingFromItems(s){
       packingType: "Carton",
       totalPacked,
       qty: it.qty || "",
-      lengthCm: cat.lengthCm || "",
-      widthCm: cat.widthCm || "",
-      heightCm: cat.heightCm || "",
+      lengthIn: cat.lengthIn || "",
+      widthIn: cat.widthIn || "",
+      heightIn: cat.heightIn || "",
       netWeightPerCtn: cat.netWeightPerCtn || "",
       grossWeightPerCtn: cat.grossWeightPerCtn || ""
     };
@@ -1125,14 +1125,14 @@ function renderCatalogView(){
   const rows = items.length === 0
     ? `<div class="empty">No items yet. Add products below, or they'll be learned automatically when you save a packing list or invoice.</div>`
     : `<div style="overflow-x:auto;"><table class="ledger-table">
-        <thead><tr><th>Description</th><th>HS Code</th><th>UOM</th><th>Units/Ctn</th><th>L×W×H (cm)</th><th>Net/Ctn (kg)</th><th>Gross/Ctn (kg)</th><th>Unit Price</th><th></th></tr></thead>
+        <thead><tr><th>Description</th><th>HS Code</th><th>UOM</th><th>Units/Ctn</th><th>L×W×H (in)</th><th>Net/Ctn (kg)</th><th>Gross/Ctn (kg)</th><th>Unit Price</th><th></th></tr></thead>
         <tbody>${items.map(c => `
           <tr>
             <td>${escapeHtml(c.description)}</td>
             <td>${escapeHtml(c.hsCode)}</td>
             <td>${escapeHtml(c.uom)}</td>
             <td>${escapeHtml(c.unitPacked)}</td>
-            <td>${(c.lengthCm||c.widthCm||c.heightCm) ? `${escapeHtml(c.lengthCm)}×${escapeHtml(c.widthCm)}×${escapeHtml(c.heightCm)}` : ''}</td>
+            <td>${(c.lengthIn||c.widthIn||c.heightIn) ? `${escapeHtml(c.lengthIn)}×${escapeHtml(c.widthIn)}×${escapeHtml(c.heightIn)}` : ''}</td>
             <td>${escapeHtml(c.netWeightPerCtn)}</td>
             <td>${escapeHtml(c.grossWeightPerCtn)}</td>
             <td>${escapeHtml(c.unitPrice)}</td>
@@ -1148,9 +1148,9 @@ function renderCatalogView(){
         <input id="catHs" type="text" placeholder="HS Code" value="96039000" style="max-width:110px;">
         <input id="catUom" type="text" placeholder="UOM" value="Pcs" style="max-width:70px;">
         <input id="catUnitPacked" type="text" placeholder="Units/Carton" style="max-width:100px;">
-        <input id="catLength" type="text" placeholder="L cm" style="max-width:70px;">
-        <input id="catWidth" type="text" placeholder="W cm" style="max-width:70px;">
-        <input id="catHeight" type="text" placeholder="H cm" style="max-width:70px;">
+        <input id="catLength" type="text" placeholder="L in" style="max-width:70px;">
+        <input id="catWidth" type="text" placeholder="W in" style="max-width:70px;">
+        <input id="catHeight" type="text" placeholder="H in" style="max-width:70px;">
         <input id="catNetWt" type="text" placeholder="Net kg/Ctn" style="max-width:100px;">
         <input id="catGrossWt" type="text" placeholder="Gross kg/Ctn" style="max-width:100px;">
         <input id="catPrice" type="text" placeholder="Unit Price" style="max-width:90px;">
@@ -1168,9 +1168,9 @@ function addCatalogItem(){
     hsCode: document.getElementById("catHs").value.trim(),
     uom: document.getElementById("catUom").value.trim(),
     unitPacked: document.getElementById("catUnitPacked").value.trim(),
-    lengthCm: document.getElementById("catLength").value.trim(),
-    widthCm: document.getElementById("catWidth").value.trim(),
-    heightCm: document.getElementById("catHeight").value.trim(),
+    lengthIn: document.getElementById("catLength").value.trim(),
+    widthIn: document.getElementById("catWidth").value.trim(),
+    heightIn: document.getElementById("catHeight").value.trim(),
     netWeightPerCtn: document.getElementById("catNetWt").value.trim(),
     grossWeightPerCtn: document.getElementById("catGrossWt").value.trim(),
     unitPrice: document.getElementById("catPrice").value.trim()
@@ -1195,9 +1195,9 @@ function packingCatalogFill(i){
   if(cat.hsCode) row.hsCode = cat.hsCode;
   if(cat.uom) row.uom = cat.uom;
   if(cat.unitPacked) row.unitPacked = cat.unitPacked;
-  if(cat.lengthCm) row.lengthCm = cat.lengthCm;
-  if(cat.widthCm) row.widthCm = cat.widthCm;
-  if(cat.heightCm) row.heightCm = cat.heightCm;
+  if(cat.lengthIn) row.lengthIn = cat.lengthIn;
+  if(cat.widthIn) row.widthIn = cat.widthIn;
+  if(cat.heightIn) row.heightIn = cat.heightIn;
   if(cat.netWeightPerCtn) row.netWeightPerCtn = cat.netWeightPerCtn;
   if(cat.grossWeightPerCtn) row.grossWeightPerCtn = cat.grossWeightPerCtn;
   document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
@@ -1250,9 +1250,9 @@ function renderDataView(){
       <div class="field"><label>HS Code column</label><select id="mapHs">${headerOpts}</select></div>
       <div class="field"><label>UOM column</label><select id="mapUom">${headerOpts}</select></div>
       <div class="field"><label>Units/Carton column</label><select id="mapUnitPacked">${headerOpts}</select></div>
-      <div class="field"><label>Length (cm) column</label><select id="mapLength">${headerOpts}</select></div>
-      <div class="field"><label>Width (cm) column</label><select id="mapWidth">${headerOpts}</select></div>
-      <div class="field"><label>Height (cm) column</label><select id="mapHeight">${headerOpts}</select></div>
+      <div class="field"><label>Length (in) column</label><select id="mapLength">${headerOpts}</select></div>
+      <div class="field"><label>Width (in) column</label><select id="mapWidth">${headerOpts}</select></div>
+      <div class="field"><label>Height (in) column</label><select id="mapHeight">${headerOpts}</select></div>
       <div class="field"><label>Net Weight/Carton (kg) column</label><select id="mapNetWt">${headerOpts}</select></div>
       <div class="field"><label>Gross Weight/Carton (kg) column</label><select id="mapGrossWt">${headerOpts}</select></div>
       <div class="field"><label>Unit Price column</label><select id="mapPrice">${headerOpts}</select></div>`;
@@ -1432,9 +1432,9 @@ function runImport(){
           hsCode: col("mapHs")!==null ? String(r[col("mapHs")]||"").trim() : "",
           uom: col("mapUom")!==null ? String(r[col("mapUom")]||"").trim() : "",
           unitPacked: col("mapUnitPacked")!==null ? String(r[col("mapUnitPacked")]||"").trim() : "",
-          lengthCm: col("mapLength")!==null ? String(r[col("mapLength")]||"").trim() : "",
-          widthCm: col("mapWidth")!==null ? String(r[col("mapWidth")]||"").trim() : "",
-          heightCm: col("mapHeight")!==null ? String(r[col("mapHeight")]||"").trim() : "",
+          lengthIn: col("mapLength")!==null ? String(r[col("mapLength")]||"").trim() : "",
+          widthIn: col("mapWidth")!==null ? String(r[col("mapWidth")]||"").trim() : "",
+          heightIn: col("mapHeight")!==null ? String(r[col("mapHeight")]||"").trim() : "",
           netWeightPerCtn: col("mapNetWt")!==null ? String(r[col("mapNetWt")]||"").trim() : "",
           grossWeightPerCtn: col("mapGrossWt")!==null ? String(r[col("mapGrossWt")]||"").trim() : "",
           unitPrice: col("mapPrice")!==null ? String(r[col("mapPrice")]||"").trim() : ""
@@ -2053,12 +2053,16 @@ function renderPackingItemsEditor(){
   const catalogOptions = listCatalog().map(c => `<option value="${escapeHtml(c.description)}">`).join("");
   const rows = packingItemRows.map((it, i) => {
     const totalPacked = parseFloat(it.totalPacked)||0;
-    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
-    const cbmPerCtn = (L*W*H) / 1000000; // cm3 -> m3
+    const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
+    const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3 (1 in3 = 16.387064 cm3)
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const totalCBM = cbmPerCtn * totalPacked;
     const totalNet = netPerCtn * totalPacked;
     const totalGross = grossPerCtn * totalPacked;
+    // Qty defaults to Cartons × Unit Packed when never explicitly set (e.g. rows added by hand,
+    // or where the description didn't match an invoice item) — so the total is never blank/zero.
+    // Still fully editable to correct for a partially-filled last carton.
+    const qtyDisplay = (it.qty !== undefined && it.qty !== "") ? it.qty : ((parseFloat(it.unitPacked)||0) * totalPacked || "");
     return `
     <tr>
       <td><input data-pitem="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code" style="width:85px;"></td>
@@ -2067,13 +2071,13 @@ function renderPackingItemsEditor(){
       <td><input data-pitem="unitPacked" data-idx="${i}" value="${escapeHtml(it.unitPacked)}" placeholder="Unit Packed" style="width:75px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="packingType" data-idx="${i}" value="${escapeHtml(it.packingType)}" placeholder="Packing" style="width:70px;"></td>
       <td><input data-pitem="totalPacked" data-idx="${i}" value="${escapeHtml(it.totalPacked)}" placeholder="Cartons" style="width:65px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="lengthCm" data-idx="${i}" value="${escapeHtml(it.lengthCm)}" placeholder="L cm" style="width:60px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="widthCm" data-idx="${i}" value="${escapeHtml(it.widthCm)}" placeholder="W cm" style="width:60px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="heightCm" data-idx="${i}" value="${escapeHtml(it.heightCm)}" placeholder="H cm" style="width:60px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="lengthIn" data-idx="${i}" value="${escapeHtml(it.lengthIn)}" placeholder="L in" style="width:60px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="widthIn" data-idx="${i}" value="${escapeHtml(it.widthIn)}" placeholder="W in" style="width:60px;" oninput="App.packingRecalc()"></td>
+      <td><input data-pitem="heightIn" data-idx="${i}" value="${escapeHtml(it.heightIn)}" placeholder="H in" style="width:60px;" oninput="App.packingRecalc()"></td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbmctn="${i}">${cbmPerCtn ? cbmPerCtn.toFixed(4) : ''}</td>
       <td><input data-pitem="netWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.netWeightPerCtn)}" placeholder="Net kg" style="width:65px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="grossWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.grossWeightPerCtn)}" placeholder="Gross kg" style="width:70px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="qty" data-idx="${i}" value="${escapeHtml(it.qty)}" placeholder="Actual qty" style="width:80px;" oninput="App.packingRecalc()" title="Actual quantity shipped — matches the invoice, independent of carton rounding"></td>
+      <td><input data-pitem="qty" data-idx="${i}" value="${escapeHtml(qtyDisplay)}" placeholder="Actual qty" style="width:80px;" oninput="App.packingRecalc()" title="Actual quantity shipped — matches the invoice, independent of carton rounding"></td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbm="${i}">${totalCBM ? totalCBM.toFixed(2) : ''}</td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-net="${i}">${totalNet ? totalNet.toFixed(1) : ''}</td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-gross="${i}">${totalGross ? totalGross.toFixed(1) : ''}</td>
@@ -2087,7 +2091,7 @@ function renderPackingItemsEditor(){
     <datalist id="catalogPackingNames">${catalogOptions}</datalist>
     <div style="overflow-x:auto;">
     <table class="items-table">
-      <thead><tr><th>HS Code</th><th>Item Description</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Cartons</th><th>L (cm)</th><th>W (cm)</th><th>H (cm)</th><th>CBM/Ctn</th><th>Net Wt/Ctn (kg)</th><th>Gross Wt/Ctn (kg)</th><th>Total Qty (UOM)</th><th>Total CBM</th><th>Total Net (kg)</th><th>Total Gross (kg)</th><th></th></tr></thead>
+      <thead><tr><th>HS Code</th><th>Item Description</th><th>UOM</th><th>Unit Packed</th><th>Packing Type</th><th>Cartons</th><th>L (in)</th><th>W (in)</th><th>H (in)</th><th>CBM/Ctn</th><th>Net Wt/Ctn (kg)</th><th>Gross Wt/Ctn (kg)</th><th>Total Qty (UOM)</th><th>Total CBM</th><th>Total Net (kg)</th><th>Total Gross (kg)</th><th></th></tr></thead>
       <tbody id="packingTbody">${rows}</tbody>
       <tfoot><tr style="font-weight:700;background:#f1f4f8;">
         <td colspan="5" style="text-align:right;padding:7px 8px;">Totals</td>
@@ -2108,11 +2112,11 @@ function packingTotals(){
   let packed=0, uom=0, cbm=0, net=0, gross=0;
   packingItemRows.forEach(it => {
     const tp = parseFloat(it.totalPacked)||0;
-    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
-    const cbmPerCtn = (L*W*H) / 1000000;
+    const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
+    const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     packed += tp;
-    uom += parseFloat(it.qty)||0;
+    uom += parseFloat(it.qty) || ((parseFloat(it.unitPacked)||0) * tp);
     cbm += cbmPerCtn*tp;
     net += netPerCtn*tp;
     gross += grossPerCtn*tp;
@@ -2130,8 +2134,8 @@ function packingRecalc(){
   syncPackingRowsFromDom();
   packingItemRows.forEach((it, i) => {
     const tp = parseFloat(it.totalPacked)||0;
-    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
-    const cbmPerCtn = (L*W*H) / 1000000;
+    const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
+    const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const cbmCtnEl = document.querySelector(`[data-calc-cbmctn="${i}"]`);
     const cbmEl = document.querySelector(`[data-calc-cbm="${i}"]`);
@@ -2326,7 +2330,7 @@ async function saveStageData(shouldPrint, goToStageKey){
     if(stage.packingItems){
       packingItemRows.forEach(it => upsertCatalogItem({
         description: it.description, hsCode: it.hsCode, uom: it.uom,
-        unitPacked: it.unitPacked, lengthCm: it.lengthCm, widthCm: it.widthCm, heightCm: it.heightCm,
+        unitPacked: it.unitPacked, lengthIn: it.lengthIn, widthIn: it.widthIn, heightIn: it.heightIn,
         netWeightPerCtn: it.netWeightPerCtn, grossWeightPerCtn: it.grossWeightPerCtn
       }));
     } else if(stage.hasItems){
@@ -2538,9 +2542,9 @@ function printPackingList(header, docData, ref, customer, routing){
   let totPacked=0, totUOM=0, totCBM=0, totNet=0, totGross=0;
   const rows = items.map((it, i) => {
     const tp = parseFloat(it.totalPacked)||0;
-    const uom = parseFloat(it.qty)||0; // actual quantity shipped, not cartons × per-carton capacity
-    const L = parseFloat(it.lengthCm)||0, W = parseFloat(it.widthCm)||0, H = parseFloat(it.heightCm)||0;
-    const cbmPerCtn = (L*W*H)/1000000;
+    const uom = parseFloat(it.qty) || ((parseFloat(it.unitPacked)||0) * tp); // actual qty if set, else Cartons × Unit Packed
+    const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
+    const cbmPerCtn = (L*W*H) * 0.000016387064; // cubic inches -> m3
     const netPerCtn = parseFloat(it.netWeightPerCtn)||0, grossPerCtn = parseFloat(it.grossWeightPerCtn)||0;
     const cbm = cbmPerCtn*tp, net = netPerCtn*tp, gross = grossPerCtn*tp;
     totPacked += tp; totUOM += uom; totCBM += cbm; totNet += net; totGross += gross;
