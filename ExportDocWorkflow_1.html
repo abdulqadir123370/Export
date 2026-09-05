@@ -469,6 +469,8 @@ let quickFormOpen = null; // null | 'expense' | 'consignee' — inline forms on 
 let modalItemRows = [];
 let packingItemRows = [];
 let customFieldRows = []; // ad-hoc {label, value} pairs for anything non-standard on a document
+let packingCbmOverridden = false; // true once the user hand-edits the grand-total CBM field
+let packingCbmSavedOverride = null; // the last saved override value, if any
 let pendingUploadFile = null; // { name, dataUrl } waiting to be saved with the stage
 
 function toast(msg, isError){
@@ -1886,7 +1888,24 @@ function renderStagePage(s, stageKey){
   modalItemRows = modalItemRows.map(it => ({...it}));
   packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems && s.packingItems.length ? s.packingItems : derivePackingFromItems(s)));
   packingItemRows = packingItemRows.map(it => ({...it}));
+  // Per-row override flags: if a saved doc predates these flags, infer them — a stored Qty or
+  // Total CBM that differs from the computed default was a manual override, so keep respecting it.
+  packingItemRows.forEach(it => {
+    const tp = parseFloat(it.totalPacked)||0;
+    const L = parseFloat(it.lengthIn)||0, W = parseFloat(it.widthIn)||0, H = parseFloat(it.heightIn)||0;
+    const cbmPerCtn = (L*W*H) * 0.000016387064;
+    if(it._cbmTouched === undefined){
+      const autoCbm = (cbmPerCtn*tp) ? (cbmPerCtn*tp).toFixed(2) : "";
+      it._cbmTouched = (it.totalCBM !== undefined && it.totalCBM !== "" && String(it.totalCBM) !== autoCbm);
+    }
+    if(it._qtyTouched === undefined){
+      const autoQty = ((parseFloat(it.unitPacked)||0) * tp) || "";
+      it._qtyTouched = (it.qty !== undefined && it.qty !== "" && String(it.qty) !== String(autoQty));
+    }
+  });
   customFieldRows = (savedDoc.customFields || []).map(f => ({...f}));
+  packingCbmOverridden = (savedDoc.totalCBM != null && savedDoc.totalCBM !== "");
+  packingCbmSavedOverride = savedDoc.totalCBM;
   pendingUploadFile = null;
 
   const isSaifDoc = stage.extraFields.some(f => f.name === "issuerEntity");
@@ -2077,8 +2096,8 @@ function renderPackingItemsEditor(){
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-cbmctn="${i}">${cbmPerCtn ? cbmPerCtn.toFixed(4) : ''}</td>
       <td><input data-pitem="netWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.netWeightPerCtn)}" placeholder="Net kg" style="width:65px;" oninput="App.packingRecalc()"></td>
       <td><input data-pitem="grossWeightPerCtn" data-idx="${i}" value="${escapeHtml(it.grossWeightPerCtn)}" placeholder="Gross kg" style="width:70px;" oninput="App.packingRecalc()"></td>
-      <td><input data-pitem="qty" data-idx="${i}" value="${escapeHtml(qtyDisplay)}" placeholder="Actual qty" style="width:80px;" oninput="App.packingRecalc()" title="Actual quantity shipped — matches the invoice, independent of carton rounding"></td>
-      <td><input data-pitem="totalCBM" data-idx="${i}" value="${escapeHtml(cbmDisplay)}" placeholder="Total CBM" style="width:75px;" oninput="App.packingRecalc()" title="Defaults to CBM/Ctn × Cartons — editable if the actual figure differs"></td>
+      <td><input data-pitem="qty" data-idx="${i}" value="${escapeHtml(qtyDisplay)}" placeholder="Actual qty" style="width:80px;" oninput="App.packingQtyRowEdited(${i})" onblur="App.packingRecalc()" title="Actual quantity shipped — matches the invoice, independent of carton rounding"></td>
+      <td><input data-pitem="totalCBM" data-idx="${i}" value="${escapeHtml(cbmDisplay)}" placeholder="Total CBM" style="width:75px;" oninput="App.packingCbmRowEdited(${i})" onblur="App.packingRecalc()" title="Defaults to CBM/Ctn × Cartons — editable if the actual figure differs"></td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-net="${i}">${totalNet ? totalNet.toFixed(1) : ''}</td>
       <td style="font-size:.78rem;text-align:right;white-space:nowrap;" data-calc-gross="${i}">${totalGross ? totalGross.toFixed(1) : ''}</td>
       <td><button class="rm" onclick="App.removePackingItemRow(${i})">✕</button></td>
@@ -2099,7 +2118,7 @@ function renderPackingItemsEditor(){
         <td colspan="4"></td>
         <td colspan="2"></td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalUOM">${totals.uom.toLocaleString()}</td>
-        <td style="text-align:right;padding:7px 8px;" id="packingTotalCBM">${totals.cbm.toFixed(2)}</td>
+        <td style="padding:2px 4px;"><input id="packingTotalCBM" value="${escapeHtml(packingCbmOverridden && packingCbmSavedOverride != null ? packingCbmSavedOverride : totals.cbm.toFixed(2))}" oninput="App.markCbmOverride()" style="width:75px;text-align:right;font-weight:700;border:1px solid var(--border);border-radius:5px;padding:5px 6px;font-size:.85rem;" title="Auto-sums from the rows above — edit directly to override the final figure"></td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalNet">${totals.net.toFixed(1)}</td>
         <td style="text-align:right;padding:7px 8px;" id="packingTotalGross">${totals.gross.toFixed(1)}</td>
         <td></td>
@@ -2144,6 +2163,21 @@ function packingRecalc(){
     if(cbmCtnEl) cbmCtnEl.textContent = cbmPerCtn ? cbmPerCtn.toFixed(4) : '';
     if(netEl) netEl.textContent = (netPerCtn*tp) ? (netPerCtn*tp).toFixed(1) : '';
     if(grossEl) grossEl.textContent = (grossPerCtn*tp) ? (grossPerCtn*tp).toFixed(1) : '';
+    // Live-fill the editable Qty and Total CBM defaults too (previously these only filled on a
+    // full re-render, leaving them blank when other fields changed). Skip rows the user has
+    // hand-edited, and never fight the field the user is currently typing in.
+    const cbmInput = document.querySelector(`[data-pitem="totalCBM"][data-idx="${i}"]`);
+    if(cbmInput && !it._cbmTouched && cbmInput !== document.activeElement){
+      const autoCbm = (cbmPerCtn*tp) ? (cbmPerCtn*tp).toFixed(2) : "";
+      cbmInput.value = autoCbm;
+      it.totalCBM = autoCbm;
+    }
+    const qtyInput = document.querySelector(`[data-pitem="qty"][data-idx="${i}"]`);
+    if(qtyInput && !it._qtyTouched && qtyInput !== document.activeElement){
+      const autoQty = ((parseFloat(it.unitPacked)||0) * tp) || "";
+      qtyInput.value = autoQty;
+      it.qty = String(autoQty);
+    }
   });
   const totals = packingTotals();
   const tp = document.getElementById("packingTotalPacked");
@@ -2153,9 +2187,26 @@ function packingRecalc(){
   const tg = document.getElementById("packingTotalGross");
   if(tp) tp.textContent = totals.packed.toLocaleString();
   if(tu) tu.textContent = totals.uom.toLocaleString();
-  if(tc) tc.textContent = totals.cbm.toFixed(2);
+  if(tc && !packingCbmOverridden) tc.value = totals.cbm.toFixed(2);
   if(tn) tn.textContent = totals.net.toFixed(1);
   if(tg) tg.textContent = totals.gross.toFixed(1);
+}
+// User hand-edited the grand-total CBM field — stop auto-overwriting it as rows change,
+// until this document is reopened fresh (which resets the flag).
+function markCbmOverride(){
+  packingCbmOverridden = true;
+}
+// Per-row versions: typing directly in a row's Total CBM or Qty marks it as a manual override.
+// Clearing the field hands it back to auto-calc (refills on blur).
+function packingCbmRowEdited(i){
+  const it = packingItemRows[i];
+  if(it) it._cbmTouched = (document.querySelector(`[data-pitem="totalCBM"][data-idx="${i}"]`)||{}).value !== "";
+  packingRecalc();
+}
+function packingQtyRowEdited(i){
+  const it = packingItemRows[i];
+  if(it) it._qtyTouched = (document.querySelector(`[data-pitem="qty"][data-idx="${i}"]`)||{}).value !== "";
+  packingRecalc();
 }
 // Recompute each row's Cartons from the invoice quantity ÷ Unit Packed — use this any time
 // Unit Packed gets corrected after the packing list was first generated, since Cartons doesn't
@@ -2303,6 +2354,8 @@ async function saveStageData(shouldPrint, goToStageKey){
     if(stage.packingItems){
       docData.packingItems = packingItemRows;
       updates.packingItems = packingItemRows; // shared at shipment level so it can pre-fill next time
+      const cbmFooterEl = document.getElementById("packingTotalCBM");
+      if(cbmFooterEl) docData.totalCBM = cbmFooterEl.value;
     } else if(stage.fileUpload){
       const prevDoc = (s.documents && s.documents[currentStageKey]) || {};
       if(pendingUploadFile){
@@ -2622,7 +2675,7 @@ function printPackingList(header, docData, ref, customer, routing){
           <td colspan="4" style="text-align:center">Total ${escapeHtml(docData.containerType||'')}</td>
           <td style="text-align:center">${totPacked.toLocaleString()}</td>
           <td style="text-align:center">${totUOM.toLocaleString()}</td>
-          <td style="text-align:center">${totCBM.toFixed(2)}</td>
+          <td style="text-align:center">${(docData.totalCBM != null && docData.totalCBM !== "") ? escapeHtml(docData.totalCBM) : totCBM.toFixed(2)}</td>
           <td style="text-align:center">${totNet.toFixed(1)}</td>
           <td style="text-align:center">${totGross.toFixed(1)}</td>
         </tr>
@@ -2644,7 +2697,8 @@ function printPackingList(header, docData, ref, customer, routing){
 window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
   saveStageData, addItemRow, removeItemRow, render: renderApp,
-  addPackingItemRow, removePackingItemRow, packingRecalc, recalcCartonsFromItems,
+  addPackingItemRow, removePackingItemRow, packingRecalc, recalcCartonsFromItems, markCbmOverride,
+  packingCbmRowEdited, packingQtyRowEdited,
   addCustomFieldRow, removeCustomFieldRow,
   stageFileSelected, downloadStageFile,
   duplicateShipment, editShipmentCustomer,
