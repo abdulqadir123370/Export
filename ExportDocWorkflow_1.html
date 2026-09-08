@@ -256,9 +256,10 @@ function rememberReusables(headerData, extraData){
   });
   // bank details belong to whichever entity issued THIS document — Saif Al Sahra for s10/s11, otherwise the shipment's shipper
   const bankEntity = extraData.issuerEntity || headerData.exporterEntity;
+  const isSaifBank = bankEntity === SAIF_ENTITY;
   ["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].forEach(k => {
     if(extraData[k]){
-      st.bank[k] = extraData[k];
+      if(!isSaifBank) st.bank[k] = extraData[k]; // global fallback is for shipper entities only — Saif's bank must never leak into it
       if(bankEntity){
         st.bankByEntity = st.bankByEntity || {};
         st.bankByEntity[bankEntity] = st.bankByEntity[bankEntity] || {};
@@ -1847,9 +1848,14 @@ function smartDefault(f, s, header, stage){
   if(f.name === "issuerAddress") return (settings.exporterAddresses||{})[SAIF_ENTITY] || "";
   if(f.name === "buyerOverride") return s.customer || "";
   if(["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].includes(f.name)){
-    // Saif Al Sahra documents (s10/s11) use Saif Al Sahra's own bank; other stages use the shipment's shipper entity
+    // Saif Al Sahra documents (s10/s11) use Saif Al Sahra's own bank — customers in the UAE pay
+    // Saif Al Sahra, never the Pakistani manufacturer. NO fallback to the global/shipper bank
+    // here: better a blank field (filled once, then remembered per entity) than the wrong account.
     const isSaifDoc = stage && stage.extraFields.some(x => x.name === "issuerEntity");
-    const entity = isSaifDoc ? SAIF_ENTITY : header.exporterEntity;
+    if(isSaifDoc){
+      return ((settings.bankByEntity||{})[SAIF_ENTITY] || {})[f.name] || "";
+    }
+    const entity = header.exporterEntity;
     const perEntity = (settings.bankByEntity||{})[entity] || {};
     return perEntity[f.name] || (settings.bank||{})[f.name] || "";
   }
@@ -1920,7 +1926,18 @@ function renderStagePage(s, stageKey){
     <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
   const saifNote = isSaifDoc ? `<div style="font-size:.78rem;color:var(--muted);margin:-4px 0 14px;">This document is issued by Saif Al Sahra — see "Issued By" below. (The manufacturing Shipper above doesn't apply here and isn't shown.)</div>` : "";
   const extraFieldsHtml = stage.extraFields.map(f => {
-    const val = savedDoc[f.name] != null && savedDoc[f.name] !== "" ? savedDoc[f.name] : smartDefault(f, s, header, stage);
+    let val = savedDoc[f.name] != null && savedDoc[f.name] !== "" ? savedDoc[f.name] : smartDefault(f, s, header, stage);
+    // Bank details must belong to the ISSUER of this document. On Saif Al Sahra docs, a saved
+    // value that matches the manufacturing shipper's bank is stale wrong data (from before this
+    // rule) — replace it with Saif Al Sahra's own bank.
+    if(isSaifDoc && ["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].includes(f.name)){
+      const st = getSettings();
+      const shipperBank = (st.bankByEntity||{})[header.exporterEntity] || st.bank || {};
+      const saifBank = (st.bankByEntity||{})[SAIF_ENTITY] || {};
+      if(savedDoc[f.name] != null && savedDoc[f.name] !== "" && savedDoc[f.name] === shipperBank[f.name] && shipperBank[f.name] !== saifBank[f.name]){
+        val = saifBank[f.name] || "";
+      }
+    }
     let html = `<div class="field"><label>${f.label}</label>${fieldInput(f, val)}</div>`;
     if(isSaifDoc && f.name === "buyerOverride"){
       // Buyer Address sits right next to Buyer Name here (still saved into the shared header, via data-headerfield)
