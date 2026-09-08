@@ -255,6 +255,10 @@ function rememberReusables(headerData, extraData){
     if(headerData[k]) st.lastHeader[k] = headerData[k];
   });
   // bank details belong to whichever entity issued THIS document — Saif Al Sahra for s10/s11, otherwise the shipment's shipper
+  // First: permanently scrub a polluted Saif record left by the old bug (shipper's bank saved under Saif Al Sahra)
+  if(st.bankByEntity && st.bankByEntity[SAIF_ENTITY] && st.bankByEntity[SAIF_ENTITY].accountNo && !cleanSaifBank(st).accountNo){
+    delete st.bankByEntity[SAIF_ENTITY];
+  }
   const bankEntity = extraData.issuerEntity || headerData.exporterEntity;
   const isSaifBank = bankEntity === SAIF_ENTITY;
   ["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].forEach(k => {
@@ -354,6 +358,18 @@ function whatsappReminder(consigneeId){
 const EXPORTERS = ["Royal Plastics & Household", "Babji Traders", "Babji Manufacturing"];
 const SAIF_ENTITY = "Saif Al Sahra Trading LLC";
 const SETTINGS_ENTITIES = [...EXPORTERS, SAIF_ENTITY]; // shown in Data tab so Saif Al Sahra also gets its own address+bank block
+
+// The old save logic wrote the SHIPPER's bank under Saif Al Sahra's entity record whenever a Saif
+// doc was saved with the wrong (fallback) bank showing. Detect that pollution by IBAN: if Saif's
+// stored account number matches any shipper entity's (or the global) account, the whole record is
+// bogus — return {} so Saif docs show blank fields instead of a Pakistani bank account.
+function cleanSaifBank(st){
+  const saif = (st.bankByEntity||{})[SAIF_ENTITY];
+  if(!saif) return {};
+  const others = [st.bank||{}, ...EXPORTERS.map(e => (st.bankByEntity||{})[e]||{})];
+  const polluted = saif.accountNo && others.some(b => b.accountNo && b.accountNo === saif.accountNo);
+  return polluted ? {} : saif;
+}
 
 const HEADER_FIELDS = [
   { name:"exporterEntity", label:"Shipper", type:"select", options:SETTINGS_ENTITIES, default:EXPORTERS[0] },
@@ -1280,7 +1296,7 @@ function renderDataView(){
       ${SETTINGS_ENTITIES.map((e,i) => {
         const st = getSettings();
         const addr = (st.exporterAddresses||{})[e] || "";
-        const bank = (st.bankByEntity||{})[e] || st.bank || {};
+        const bank = e === SAIF_ENTITY ? cleanSaifBank(st) : ((st.bankByEntity||{})[e] || st.bank || {});
         return `
         <div class="section-title">${escapeHtml(e)}</div>
         <div class="field-grid">
@@ -1853,7 +1869,7 @@ function smartDefault(f, s, header, stage){
     // here: better a blank field (filled once, then remembered per entity) than the wrong account.
     const isSaifDoc = stage && stage.extraFields.some(x => x.name === "issuerEntity");
     if(isSaifDoc){
-      return ((settings.bankByEntity||{})[SAIF_ENTITY] || {})[f.name] || "";
+      return cleanSaifBank(settings)[f.name] || "";
     }
     const entity = header.exporterEntity;
     const perEntity = (settings.bankByEntity||{})[entity] || {};
@@ -1933,8 +1949,12 @@ function renderStagePage(s, stageKey){
     if(isSaifDoc && ["bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode"].includes(f.name)){
       const st = getSettings();
       const shipperBank = (st.bankByEntity||{})[header.exporterEntity] || st.bank || {};
-      const saifBank = (st.bankByEntity||{})[SAIF_ENTITY] || {};
-      if(savedDoc[f.name] != null && savedDoc[f.name] !== "" && savedDoc[f.name] === shipperBank[f.name] && shipperBank[f.name] !== saifBank[f.name]){
+      const globalBank = st.bank || {};
+      const saifBank = cleanSaifBank(st);
+      const v = savedDoc[f.name];
+      // A saved value matching the shipper's or global bank on a Saif doc is stale wrong data —
+      // replace with Saif Al Sahra's own value, or blank if none is on file yet.
+      if(v != null && v !== "" && (v === shipperBank[f.name] || v === globalBank[f.name]) && v !== saifBank[f.name]){
         val = saifBank[f.name] || "";
       }
     }
