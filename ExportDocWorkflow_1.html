@@ -504,6 +504,16 @@ let currentStageKey = "s1";
 // own sub-invoice on the s10 (proforma) and s11 (tax invoice) pages, stored in extra document
 // slots: base slot "s10" is customer 1, "s10_c2" is customer 2, and so on. Same for s11.
 let currentSaifSub = 0;
+// Unsaved "+ Add Customer" tabs must survive switching between tabs — track how many tabs the
+// current stage view shows, tied to the shipment+stage they belong to.
+let saifTabs = { ctx: "", count: 0 };
+function saifTabCount(s, stageKey){
+  const ctx = (s ? s.id : "") + "|" + stageKey;
+  if(saifTabs.ctx !== ctx) saifTabs = { ctx, count: 0 };
+  const count = Math.max(saifSubCount(s, stageKey), saifTabs.count, currentSaifSub + 1);
+  saifTabs.count = count;
+  return count;
+}
 const SAIF_MULTI_STAGES = ["s10","s11"];
 function saifSlot(stageKey, sub){ return sub > 0 ? `${stageKey}_c${sub+1}` : stageKey; }
 function saifSubCount(s, stageKey){
@@ -2096,7 +2106,7 @@ function renderStagePage(s, stageKey){
       <div class="page-sub">${escapeHtml(s.ref)}${s.customer ? ' — ' + escapeHtml(s.customer) : ''}</div>
 
       ${isSaifMulti ? (() => {
-        const count = Math.max(saifSubCount(s, stageKey), currentSaifSub + 1);
+        const count = saifTabCount(s, stageKey);
         const tabs = Array.from({length: count}, (_, i) => {
           const d = (s.documents && s.documents[saifSlot(stageKey, i)]) || {};
           const name = (d.buyerOverride || "").trim() || `Customer ${i+1}`;
@@ -2142,7 +2152,8 @@ function selectSaifSub(i){
 function addSaifSub(){
   const s = shipments.find(x => x.id === currentShipId);
   if(!s) return;
-  currentSaifSub = Math.max(saifSubCount(s, currentStageKey), currentSaifSub + 1);
+  currentSaifSub = saifTabCount(s, currentStageKey); // next index = current tab count
+  saifTabs.count = currentSaifSub + 1;
   renderApp();
 }
 async function removeSaifSub(i){
@@ -2157,6 +2168,7 @@ async function removeSaifSub(i){
     if(s.documents) s.documents[slot] = null;
   }catch(e){ toast("Could not remove: " + e.message, true); return; }
   if(currentSaifSub >= i) currentSaifSub = Math.max(0, currentSaifSub - 1);
+  saifTabs = { ctx: "", count: 0 }; // recount from saved slots after a removal
   renderApp();
 }
 
