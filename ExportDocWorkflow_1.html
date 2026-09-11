@@ -1411,8 +1411,16 @@ const BACKUP_COLLECTIONS = [
 ];
 let importState = null; // { rows, headers, target, partyId }
 
+// Provider <option> list grouped by side so PKR (Babji) and AED (Saif) providers never mix
+function providerOptionsGrouped(){
+  const opt = p => `<option value="${p.id}">${escapeHtml(p.name)} (${providerCurrency(p)})</option>`;
+  const pk = providers.filter(p => p.side !== "uae").map(opt).join("");
+  const uae = providers.filter(p => p.side === "uae").map(opt).join("");
+  return `<optgroup label="Pakistan — paid by Babji (PKR)">${pk || '<option disabled>none yet</option>'}</optgroup>
+    <optgroup label="UAE — paid by Saif Al Sahra (AED)">${uae || '<option disabled>none yet</option>'}</optgroup>`;
+}
 function renderDataView(){
-  const providerOptions = providers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  const providerOptions = providerOptionsGrouped();
   const consigneeOptions = consignees.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
 
   let mappingBlock = "";
@@ -1931,7 +1939,7 @@ function renderShipmentFinancials(s){
       <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}${t.fileDataUrl?` <a href="javascript:void(0)" onclick="App.viewTxnProof('consignee','${t.id}')">📎</a>`:''}</td></tr>`;
   }).join("");
 
-  const providerOptions = providers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  const providerOptions = providerOptionsGrouped();
   const consigneeOptions = consignees.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
 
   const expenseForm = quickFormOpen === 'expense' ? `
