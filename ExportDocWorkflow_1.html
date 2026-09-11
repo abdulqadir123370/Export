@@ -132,7 +132,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, serverTimestamp, getDocs, writeBatch
+  onSnapshot, query, orderBy, serverTimestamp, getDocs, getDoc, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 // Storage (Firebase Storage) intentionally not used — that requires the Blaze billing plan.
@@ -172,6 +172,8 @@ const PROVIDER_COL = "expenseProviders";
 const TXN_COL = "expenseTxns";
 const CONSIGNEE_COL = "consignees";
 const CTXN_COL = "consigneeTxns";
+const PROOF_COL = "txnProofs"; // attachments live here, fetched ONLY on click — keeps the live
+// txn listeners lightweight so proofs don't get re-downloaded by every device on every session
 const CATALOG_COL = "itemCatalog";
 const SETTINGS_DOC_ID = "main";
 
@@ -212,7 +214,52 @@ async function addTxnRecord(data){
   const docRef = await addDoc(collection(db, TXN_COL), { ...data, createdAt: serverTimestamp() });
   return docRef.id;
 }
-async function deleteTxnRecord(id){ await deleteDoc(doc(db, TXN_COL, id)); }
+async function deleteTxnRecord(id){
+  const t = listTxns().find(x => x.id === id);
+  if(t && t.proofId) await deleteProofRecord(t.proofId);
+  await deleteDoc(doc(db, TXN_COL, id));
+}
+// Firestore caps documents at 1MB, but scanned PDF bills easily run to a few MB — so large
+// files are split across numbered chunk documents (parent doc holds fileName + chunkCount;
+// chunks live at {parentId}_c0, {parentId}_c1, ...). Small files stay inline on the parent.
+const PROOF_CHUNK_CHARS = 700000; // ~700KB of base64 per chunk, well under the 1MB doc limit
+async function addProofRecord(proof){
+  const dataUrl = proof.fileDataUrl || "";
+  if(dataUrl.length <= PROOF_CHUNK_CHARS){
+    const docRef = await addDoc(collection(db, PROOF_COL), { fileName: proof.fileName, fileDataUrl: dataUrl, chunkCount: 0, createdAt: serverTimestamp() });
+    return docRef.id;
+  }
+  const chunks = [];
+  for(let i = 0; i < dataUrl.length; i += PROOF_CHUNK_CHARS) chunks.push(dataUrl.slice(i, i + PROOF_CHUNK_CHARS));
+  const docRef = await addDoc(collection(db, PROOF_COL), { fileName: proof.fileName, chunkCount: chunks.length, createdAt: serverTimestamp() });
+  for(let i = 0; i < chunks.length; i++){
+    await setDoc(doc(db, PROOF_COL, docRef.id + "_c" + i), { data: chunks[i] });
+  }
+  return docRef.id;
+}
+async function fetchProofDataUrl(proofId){
+  const snap = await getDoc(doc(db, PROOF_COL, proofId));
+  if(!snap.exists()) return null;
+  const d = snap.data();
+  if(!d.chunkCount) return d.fileDataUrl || null;
+  let out = "";
+  for(let i = 0; i < d.chunkCount; i++){
+    const cs = await getDoc(doc(db, PROOF_COL, proofId + "_c" + i));
+    if(!cs.exists()) return null; // incomplete upload
+    out += cs.data().data;
+  }
+  return out;
+}
+async function deleteProofRecord(proofId){
+  try{
+    const snap = await getDoc(doc(db, PROOF_COL, proofId));
+    if(snap.exists()){
+      const n = snap.data().chunkCount || 0;
+      for(let i = 0; i < n; i++){ try{ await deleteDoc(doc(db, PROOF_COL, proofId + "_c" + i)); }catch(e){} }
+    }
+    await deleteDoc(doc(db, PROOF_COL, proofId));
+  }catch(e){}
+}
 function txnsForProvider(providerId){
   return listTxns().filter(t => t.providerId === providerId).sort((a,b) => new Date(a.date) - new Date(b.date));
 }
@@ -236,7 +283,11 @@ async function addConsigneeTxnRecord(data){
   const docRef = await addDoc(collection(db, CTXN_COL), { ...data, createdAt: serverTimestamp() });
   return docRef.id;
 }
-async function deleteConsigneeTxnRecord(id){ await deleteDoc(doc(db, CTXN_COL, id)); }
+async function deleteConsigneeTxnRecord(id){
+  const t = listConsigneeTxns().find(x => x.id === id);
+  if(t && t.proofId) await deleteProofRecord(t.proofId);
+  await deleteDoc(doc(db, CTXN_COL, id));
+}
 
 // ---- Reusable settings (exporter addresses per entity, bank details) — one shared document ----
 function getSettings(){ return settingsCache || {}; }
@@ -345,7 +396,7 @@ function balanceByCurrency(txns){
   return parts.length ? parts.join(" · ") : "Settled";
 }
 // ---- Proof attachments (vendor bills, SWIFT/advice copies) on ledger transactions ----
-const PROOF_MAX_BYTES = 700 * 1024; // Firestore doc limit is 1MB; keep headroom
+const PROOF_MAX_BYTES = 4 * 1024 * 1024; // large PDFs are chunked across documents at save time
 function readProofFile(inputEl){
   return new Promise((resolve) => {
     const f = inputEl && inputEl.files && inputEl.files[0];
@@ -354,7 +405,7 @@ function readProofFile(inputEl){
       toast("Proof must be a PDF or JPG/PNG image", true); return resolve(undefined); // undefined = invalid, abort
     }
     if(f.size > PROOF_MAX_BYTES){
-      toast("Proof file too large (max 700 KB) — compress it or take a smaller photo", true); return resolve(undefined);
+      toast("Proof file too large (max 4 MB) — compress the PDF or take a smaller photo", true); return resolve(undefined);
     }
     const r = new FileReader();
     r.onload = () => resolve({ fileName: f.name, fileDataUrl: r.result });
@@ -362,14 +413,20 @@ function readProofFile(inputEl){
     r.readAsDataURL(f);
   });
 }
-function viewTxnProof(kind, id){
+async function viewTxnProof(kind, id){
   const t = (kind === "expense" ? listTxns() : listConsigneeTxns()).find(x => x.id === id);
-  if(!t || !t.fileDataUrl){ toast("No proof attached", true); return; }
+  if(!t || (!t.fileDataUrl && !t.proofId)){ toast("No proof attached", true); return; }
+  let dataUrl = t.fileDataUrl; // legacy: stored inline on the txn
+  if(!dataUrl && t.proofId){
+    try{ dataUrl = await fetchProofDataUrl(t.proofId); }
+    catch(e){ toast("Could not load proof: " + e.message, true); return; }
+  }
+  if(!dataUrl){ toast("Proof file not found", true); return; }
   // dataURL -> blob URL so the browser opens it as a proper document instead of a giant address
-  fetch(t.fileDataUrl).then(r => r.blob()).then(b => window.open(URL.createObjectURL(b), "_blank"));
+  fetch(dataUrl).then(r => r.blob()).then(b => window.open(URL.createObjectURL(b), "_blank"));
 }
 function proofLink(kind, t){
-  return t.fileDataUrl ? ` <a href="javascript:void(0)" onclick="App.viewTxnProof('${kind}','${t.id}')" title="${escapeHtml(t.fileName||'proof')}">📎</a>` : "";
+  return (t.fileDataUrl || t.proofId) ? ` <a href="javascript:void(0)" onclick="App.viewTxnProof('${kind}','${t.id}')" title="${escapeHtml(t.fileName||'proof')}">📎</a>` : "";
 }
 function whatsappReminder(consigneeId){
   const c = consignees.find(x => x.id === consigneeId);
@@ -1079,6 +1136,11 @@ function editShipmentCustomer(shipId){
 }
 
 // ================= EXPENSES: PROVIDER LIST =================
+let expenseSideFilter = "pk"; // which side the Expenses tab is showing
+function expenseSideChanged(v){
+  expenseSideFilter = v;
+  renderApp();
+}
 function renderExpensesView(){
   const providerCard = p => {
     const cur = providerCurrency(p);
@@ -1099,13 +1161,14 @@ function renderExpensesView(){
   };
   const pkProviders = providers.filter(p => p.side !== "uae");
   const uaeProviders = providers.filter(p => p.side === "uae");
+  // The side dropdown doubles as a view filter: pick UAE and the list below shows UAE providers
+  const showPk = expenseSideFilter !== "uae";
+  const shown = showPk ? pkProviders : uaeProviders;
   const cards = providers.length === 0
     ? `<div class="empty">No service providers yet. Add one below (clearing agent, shipping line, trucker, etc.).</div>`
     : `
-      <div class="section-title">Pakistan Expenses — paid by Babji (PKR)</div>
-      ${pkProviders.length ? pkProviders.map(providerCard).join("") : `<div class="empty">No Pakistan-side providers yet.</div>`}
-      <div class="section-title" style="margin-top:18px;">UAE Expenses — paid by Saif Al Sahra (AED)</div>
-      ${uaeProviders.length ? uaeProviders.map(providerCard).join("") : `<div class="empty">No UAE-side providers yet.</div>`}`;
+      <div class="section-title">${showPk ? "Pakistan Expenses — paid by Babji (PKR)" : "UAE Expenses — paid by Saif Al Sahra (AED)"}</div>
+      ${shown.length ? shown.map(providerCard).join("") : `<div class="empty">No ${showPk ? "Pakistan" : "UAE"}-side providers yet — add one above.</div>`}`;
 
   const typeOptions = PROVIDER_TYPES.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
 
@@ -1115,9 +1178,9 @@ function renderExpensesView(){
       <div class="add-row">
         <input id="newProviderName" type="text" placeholder="Provider Name (e.g. Al-Barkat Clearing Agency)">
         <select id="newProviderType" style="flex:1;min-width:160px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">${typeOptions}</select>
-        <select id="newProviderSide" style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">
-          <option value="pk">Pakistan — paid by Babji (PKR)</option>
-          <option value="uae">UAE — paid by Saif Al Sahra (AED)</option>
+        <select id="newProviderSide" onchange="App.expenseSideChanged(this.value)" style="flex:1;min-width:200px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.9rem;">
+          <option value="pk"${expenseSideFilter !== "uae" ? " selected" : ""}>Pakistan — paid by Babji (PKR)</option>
+          <option value="uae"${expenseSideFilter === "uae" ? " selected" : ""}>UAE — paid by Saif Al Sahra (AED)</option>
         </select>
         <input id="newProviderContact" type="text" placeholder="Contact (optional)">
         <button id="addProviderBtn" onclick="App.addProvider()">Add Provider</button>
@@ -1229,8 +1292,9 @@ async function addTxn(providerId){
   const proof = await readProofFile(document.getElementById("txnProof"));
   if(proof === undefined) return; // invalid file — error already shown
   const prov = providers.find(x => x.id === providerId);
+  const proofRef = proof ? { proofId: await addProofRecord(proof), fileName: proof.fileName } : {};
   addTxnRecord({ providerId, type, date: date || new Date().toISOString().slice(0,10), amount: amount,
-    currency: providerCurrency(prov), shipmentRef, description, ...(proof||{}) });
+    currency: providerCurrency(prov), shipmentRef, description, ...proofRef });
   toast("Transaction added");
   refreshFromStorage();
   view = "ledger";
@@ -1852,7 +1916,8 @@ async function addConsigneeTxn(consigneeId){
   const proof = await readProofFile(document.getElementById("ctxnProof"));
   if(proof === undefined) return;
   const currency = (document.getElementById("ctxnCurrency")||{}).value || "USD";
-  addConsigneeTxnRecord({ consigneeId, type, date: date || new Date().toISOString().slice(0,10), amount: amount, currency, shipmentRef, description, ...(proof||{}) });
+  const proofRef = proof ? { proofId: await addProofRecord(proof), fileName: proof.fileName } : {};
+  addConsigneeTxnRecord({ consigneeId, type, date: date || new Date().toISOString().slice(0,10), amount: amount, currency, shipmentRef, description, ...proofRef });
   toast("Transaction added");
   refreshFromStorage();
   view = "consigneeLedger";
@@ -1931,12 +1996,12 @@ function renderShipmentFinancials(s){
   const expenseRows = expenseTxns.map(t => {
     const prov = providers.find(p => p.id === t.providerId);
     return `<tr><td>${escapeHtml(t.date||'')}</td><td>${escapeHtml(prov ? prov.name : '—')}</td><td>${escapeHtml(t.description||'')}</td>
-      <td class="${t.type==='charge'?'amt-charge':'amt-payment'}">${t.type==='charge'?'Charge':'Payment'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}${t.fileDataUrl?` <a href="javascript:void(0)" onclick="App.viewTxnProof('expense','${t.id}')">📎</a>`:''}</td></tr>`;
+      <td class="${t.type==='charge'?'amt-charge':'amt-payment'}">${t.type==='charge'?'Charge':'Payment'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}${(t.fileDataUrl||t.proofId)?` <a href="javascript:void(0)" onclick="App.viewTxnProof('expense','${t.id}')">📎</a>`:''}</td></tr>`;
   }).join("");
   const consigneeRows = consigneeTxns.map(t => {
     const cons = consignees.find(c => c.id === t.consigneeId);
     return `<tr><td>${escapeHtml(t.date||'')}</td><td>${escapeHtml(cons ? cons.name : '—')}</td><td>${escapeHtml(t.description||'')}</td>
-      <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}${t.fileDataUrl?` <a href="javascript:void(0)" onclick="App.viewTxnProof('consignee','${t.id}')">📎</a>`:''}</td></tr>`;
+      <td class="${t.type==='invoice'?'amt-charge':'amt-payment'}">${t.type==='invoice'?'Invoice':'Receipt'}: ${(t.currency||'PKR')} ${Number(t.amount||0).toLocaleString()}${(t.fileDataUrl||t.proofId)?` <a href="javascript:void(0)" onclick="App.viewTxnProof('consignee','${t.id}')">📎</a>`:''}</td></tr>`;
   }).join("");
 
   const providerOptions = providerOptionsGrouped();
@@ -2025,8 +2090,9 @@ async function quickAddExpenseSubmit(ref){
   const proof = await readProofFile(document.getElementById("qeProof"));
   if(proof === undefined) return;
   const prov = providers.find(x => x.id === providerId);
+  const proofRef = proof ? { proofId: await addProofRecord(proof), fileName: proof.fileName } : {};
   addTxnRecord({ providerId, type, date: date || new Date().toISOString().slice(0,10), amount: amount,
-    currency: providerCurrency(prov), shipmentRef: ref, description, ...(proof||{}) });
+    currency: providerCurrency(prov), shipmentRef: ref, description, ...proofRef });
   toast("Expense added");
   quickFormOpen = null;
   refreshFromStorage();
@@ -2042,7 +2108,8 @@ async function quickAddConsigneeSubmit(ref){
   const proof = await readProofFile(document.getElementById("qcProof"));
   if(proof === undefined) return;
   const currency = (document.getElementById("qcCurrency")||{}).value || "USD";
-  addConsigneeTxnRecord({ consigneeId, type, date: date || new Date().toISOString().slice(0,10), amount: amount, currency, shipmentRef: ref, description, ...(proof||{}) });
+  const proofRef = proof ? { proofId: await addProofRecord(proof), fileName: proof.fileName } : {};
+  addConsigneeTxnRecord({ consigneeId, type, date: date || new Date().toISOString().slice(0,10), amount: amount, currency, shipmentRef: ref, description, ...proofRef });
   toast("Consignee entry added");
   quickFormOpen = null;
   refreshFromStorage();
@@ -3084,7 +3151,7 @@ window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
   saveStageData, addItemRow, removeItemRow, render: renderApp,
   addPackingItemRow, removePackingItemRow, packingRecalc, recalcCartonsFromItems, markCbmOverride,
-  addChargeRow, removeChargeRow, packingDrvEdited, viewTxnProof,
+  addChargeRow, removeChargeRow, packingDrvEdited, viewTxnProof, expenseSideChanged,
   selectSaifSub, addSaifSub, removeSaifSub,
   packingCbmRowEdited, packingQtyRowEdited,
   addCustomFieldRow, removeCustomFieldRow,
