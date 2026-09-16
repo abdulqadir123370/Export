@@ -2249,14 +2249,12 @@ function renderStagePage(s, stageKey){
   // the tax invoice finalizes what was quoted to that UAE customer, not the Babji-leg shipment items.
   const s10Slot = (stageKey === "s11" && s.documents) ? (s.documents[saifSlot("s10", currentSaifSub)] || null) : null;
   const saifProformaItems = (s10Slot && s10Slot.items && s10Slot.items.length) ? s10Slot.items : null;
-  // Prices on the tax invoice are LOCKED to the proforma's — re-synced on every open so a price
-  // corrected on the proforma flows through (quantities stay editable for delivered amounts).
+  // The tax invoice IS the proforma, finalized: on every open its item rows are taken wholesale
+  // from the same customer's Saif proforma — names, units, quantities, prices. Edits made before
+  // Save & Print apply to that print; the next open starts from the proforma again.
   const syncS11Prices = rows => {
     if(stageKey !== "s11" || !saifProformaItems) return rows;
-    return rows.map(it => {
-      const p = saifProformaItems.find(x => (x.description||"").trim().toLowerCase() === (it.description||"").trim().toLowerCase());
-      return p && p.unitPrice ? { ...it, unitPrice: p.unitPrice } : { ...it };
-    });
+    return saifProformaItems.map(it => ({ ...it }));
   };
   if(s10Slot){
     // mirror the rest of the proforma too (buyer, address, charges) when the tax invoice has no own values yet
