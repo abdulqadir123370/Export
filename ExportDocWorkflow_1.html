@@ -132,7 +132,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, serverTimestamp, getDocs, getDoc, writeBatch
+  onSnapshot, query, orderBy, serverTimestamp, getDocs, getDoc, writeBatch, where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 // Storage (Firebase Storage) intentionally not used — that requires the Blaze billing plan.
@@ -287,6 +287,16 @@ async function deleteConsigneeTxnRecord(id){
   const t = listConsigneeTxns().find(x => x.id === id);
   if(t && t.proofId) await deleteProofRecord(t.proofId);
   await deleteDoc(doc(db, CTXN_COL, id));
+}
+// Replace any existing auto-posted entries for this key with the new record — duplicates are
+// found by querying Firestore directly (the local cache lags right after a save, which let
+// double-posts through), and every delete is awaited before the add.
+async function replaceAutoConsigneeTxn(autoKey, record){
+  try{
+    const snap = await getDocs(query(collection(db, CTXN_COL), where("autoKey", "==", autoKey)));
+    for(const d of snap.docs){ await deleteDoc(doc(db, CTXN_COL, d.id)); }
+  }catch(e){ /* worst case: replaced on the next save */ }
+  await addConsigneeTxnRecord({ ...record, autoKey });
 }
 
 // ---- Reusable settings (exporter addresses per entity, bank details) — one shared document ----
@@ -488,7 +498,7 @@ const BANK_FIELDS = [
 const STAGES = [
   { key:"s1", num:1, label:"Proforma Invoice", short:"Proforma Invoice", color:"var(--navy)", hasItems:true,
     extraFields:[
-      {name:"invoiceNo",label:"Ref Number",type:"text"},
+      {name:"invoiceNo",label:"Reference Number",type:"text",readonly:true},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       ...BANK_FIELDS,
     ]},
@@ -496,6 +506,8 @@ const STAGES = [
     extraFields:[]},
   { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:false, packingItems:true,
     extraFields:[
+      {name:"refDisplay",label:"Reference Number",type:"text",readonly:true},
+      {name:"invoiceNoDisplay",label:"Invoice Number",type:"text",readonly:true},
       {name:"packingStatus",label:"Status",type:"select",options:["Final","Draft / Provisional — not yet finalized"],default:"Final"},
       {name:"packingDate",label:"Packing Date",type:"date"},
       {name:"containerNo",label:"Container Number",type:"text"},
@@ -533,7 +545,7 @@ const STAGES = [
     extraFields:[
       {name:"issuerEntity",label:"Issued By (Shipper)",type:"text",default:SAIF_ENTITY},
       {name:"issuerAddress",label:"Issuer Address",type:"text"},
-      {name:"invoiceNo",label:"Ref Number",type:"text"},
+      {name:"invoiceNo",label:"Reference Number",type:"text",readonly:true},
       {name:"invoiceDate",label:"Invoice Date",type:"date"},
       {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
       ...BANK_FIELDS,
@@ -2321,6 +2333,16 @@ function renderStagePage(s, stageKey){
   const saifNote = isSaifDoc ? `<div style="font-size:.78rem;color:var(--muted);margin:-4px 0 14px;">This document is issued by Saif Al Sahra — see "Issued By" below. (The manufacturing Shipper above doesn't apply here and isn't shown.)</div>` : "";
   const extraFieldsHtml = stage.extraFields.map(f => {
     let val = savedDoc[f.name] != null && savedDoc[f.name] !== "" ? savedDoc[f.name] : smartDefault(f, s, header, stage);
+    // Numbering rules: proformas carry ONLY the shipment reference (read-only, never an invoice
+    // number); the packing list shows both read-only; a real invoice never shows a proforma ref.
+    if(f.name === "invoiceNo" && ["s1","s10"].includes(stageKey)){
+      val = (stageKey === "s10" && currentSaifSub > 0) ? `${s.ref}-${currentSaifSub+1}` : s.ref;
+    }
+    if(f.name === "refDisplay") val = s.ref;
+    if(f.name === "invoiceNoDisplay") val = s.invoiceNo || "(assigned when the bank invoice is saved)";
+    if(f.name === "invoiceNo" && stageKey === "s11" && (val === s.ref || String(val) === String(s.ref))){
+      val = s.invoiceNo || peekNextInvoiceNo(); // stale proforma-style ref leaked into a real invoice
+    }
     // Bank details must belong to the ISSUER of this document. On Saif Al Sahra docs, a saved
     // value that matches the manufacturing shipper's bank is stale wrong data (from before this
     // rule) — replace it with Saif Al Sahra's own bank.
@@ -2462,7 +2484,8 @@ function fieldInput(f, value){
   if(f.type === "textarea"){
     return `<textarea data-field="${f.name}">${escapeHtml(val)}</textarea>`;
   }
-  return `<input type="${f.type}" data-field="${f.name}" value="${escapeHtml(val)}">`;
+  const ro = f.readonly ? ` readonly style="background:#f4f6f9;color:#5a6b7f;cursor:not-allowed;"` : "";
+  return `<input type="${f.type}" data-field="${f.name}" value="${escapeHtml(val)}"${ro}>`;
 }
 
 // When the shipper is switched on a document, reload its address + bank details from settings
@@ -2996,7 +3019,7 @@ function printDocument(stage, header, docData, ref, customer, routing){
     </table>` : "";
 
   const extraRows = stage.extraFields.map(f => {
-    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode","extraChargeLabel","extraChargeAmount","contractNo","contractDate","invoiceDate","certNo","certDate","blNo","blDate","docCurrency","taxPercent","taxOrder"].includes(f.name)) return ""; // shown elsewhere (meta box / bank block / items table)
+    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode","extraChargeLabel","extraChargeAmount","contractNo","contractDate","invoiceDate","certNo","certDate","blNo","blDate","docCurrency","taxPercent","taxOrder","refDisplay","invoiceNoDisplay"].includes(f.name)) return ""; // shown elsewhere (meta box / bank block / items table)
     const v = docData[f.name];
     if(!v) return "";
     return `<div class="doc-field"><span>${f.label}</span><b>${escapeHtml(v)}</b></div>`;
@@ -3089,8 +3112,9 @@ function printDocument(stage, header, docData, ref, customer, routing){
         const docNo = docData.invoiceNo || docData.contractNo || docData.certNo || docData.blNo || ref;
         const rawDate = docData.invoiceDate||docData.contractDate||docData.blDate||docData.certDate||docData.loadingDate||docData.packingDate||'';
         const fmtDate = fmtDocDate(rawDate);
+        const noLabel = ["s1","s10"].includes(stage.key) ? "Ref #" : "Invoice #"; // proformas never carry an invoice number
         return `<table class="inv-box">
-          <tr><th>Invoice #</th><td>${escapeHtml(docNo)}</td></tr>
+          <tr><th>${noLabel}</th><td>${escapeHtml(docNo)}</td></tr>
           <tr><th>Date:</th><td>${escapeHtml(fmtDate)}</td></tr>
         </table>`;
       })()}
@@ -3208,7 +3232,8 @@ function printPackingList(header, docData, ref, customer, routing){
         <div>${escapeHtml(header.portOfDischarge||'')}</div>
       </div>
       <table class="inv-box">
-        <tr><th>Invoice #</th><td>${escapeHtml(docData._shipInvoiceNo || ref)}</td></tr>
+        <tr><th>Ref #</th><td>${escapeHtml(ref)}</td></tr>
+        <tr><th>Invoice #</th><td>${escapeHtml(docData._shipInvoiceNo || '')}</td></tr>
         <tr><th>Date:</th><td>${escapeHtml(fmtDocDate(docData.packingDate||''))}</td></tr>
       </table>
     </div>
@@ -3274,42 +3299,58 @@ window.addEventListener("unhandledrejection", (event) => {
 // ================= FIREBASE BOOTSTRAP: AUTH + LIVE LISTENERS =================
 let activeListenerUnsubs = [];
 
+// Live snapshots used to call renderApp() directly — every save echoed 3-4 snapshots, each
+// rebuilding the whole page. That wiped unsaved inputs, dropped button clicks mid-press (the
+// button was replaced between mousedown and mouseup), and made the app feel hung. Now:
+//  - while a document form is open (shipment detail view) or the user is typing in any field,
+//    remote updates only refresh the data caches — the UI stays put and picks up fresh data on
+//    the user's next navigation or explicit save
+//  - elsewhere, bursts of snapshot events coalesce into one render
+let liveRenderTimer = null;
+function scheduleLiveRender(){
+  if(view === "detail") return;
+  const ae = document.activeElement;
+  if(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+  clearTimeout(liveRenderTimer);
+  liveRenderTimer = setTimeout(renderApp, 150);
+}
+
 function attachLiveListeners(){
   activeListenerUnsubs.push(onSnapshot(query(collection(db, SHIP_COL), orderBy("createdAt", "desc")), snap => {
     shipments = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (shipments): " + err.message, true); }));
 
   activeListenerUnsubs.push(onSnapshot(collection(db, PROVIDER_COL), snap => {
     providers = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a,b) => (b.createdAt?.toMillis?.()||0) - (a.createdAt?.toMillis?.()||0));
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (providers): " + err.message, true); }));
 
   activeListenerUnsubs.push(onSnapshot(collection(db, TXN_COL), snap => {
     txnsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (expenses): " + err.message, true); }));
 
   activeListenerUnsubs.push(onSnapshot(collection(db, CONSIGNEE_COL), snap => {
     consignees = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a,b) => (b.createdAt?.toMillis?.()||0) - (a.createdAt?.toMillis?.()||0));
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (consignees): " + err.message, true); }));
 
   activeListenerUnsubs.push(onSnapshot(collection(db, CTXN_COL), snap => {
     consigneeTxnsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (receivables): " + err.message, true); }));
 
   activeListenerUnsubs.push(onSnapshot(collection(db, CATALOG_COL), snap => {
     catalogCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (catalog): " + err.message, true); }));
 
   activeListenerUnsubs.push(onSnapshot(doc(db, "appSettings", SETTINGS_DOC_ID), snap => {
     settingsCache = snap.exists() ? snap.data() : {};
-    renderApp();
+    scheduleLiveRender();
   }, err => { console.error(err); if(authUser) toast("Sync error (settings): " + err.message, true); }));
 }
 
@@ -3328,12 +3369,12 @@ if(CONFIG_IS_PLACEHOLDER){
     if(!user){
       authReady = false;
       detachLiveListeners();
-      renderApp(); // shows the login screen
+      scheduleLiveRender(); // shows the login screen
       return;
     }
     authReady = true;
     attachLiveListeners();
-    renderApp();
+    scheduleLiveRender();
   });
 }
 </script>
