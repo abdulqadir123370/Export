@@ -522,7 +522,7 @@ const STAGES = [
       {name:"ssNumber",label:"SS Number",type:"text"},
       {name:"ssDate",label:"SS Date",type:"date"},
     ]},
-  { key:"s7", num:7, label:"Contract", short:"Contract", color:"var(--purple)", optional:true, hasItems:false,
+  { key:"s7", num:7, label:"Contract", short:"Contract", color:"var(--purple)", optional:true, hasItems:true,
     extraFields:[
       {name:"contractNo",label:"Contract No",type:"text"},
       {name:"contractDate",label:"Contract Date",type:"date"},
@@ -559,7 +559,7 @@ const STAGES = [
 // Every invoice-type document (Babji proforma + all commercial invoices + both Saif docs) gets a
 // repeatable "Additional Charges" section (freight, handling, bank fee, ...) — any number of rows,
 // each printed as its own line on the invoice and summed into the grand total.
-["s1","s4","s5","s6","s10","s11"].forEach(key => {
+["s1","s4","s5","s6","s7","s10","s11"].forEach(key => {
   const st = STAGES.find(x => x.key === key);
   if(st) st.hasCharges = true;
 });
@@ -569,9 +569,52 @@ const STAGES = [
   const st = STAGES.find(x => x.key === key);
   if(st) st.extraFields = [{name:"docCurrency", label:"Currency (this invoice)", type:"text"}, ...st.extraFields];
 });
+// Tax on the Saif Tax Invoice, with a choice of what the tax applies to:
+//  - "Goods + other charges" — tax computed on everything (items subtotal + additional charges)
+//  - "Goods only"            — tax computed on the selling prices only; charges added after tax
+const TAX_ON_ALL = "Goods + other charges";
+const TAX_ON_GOODS = "Goods only";
+(() => {
+  const st = STAGES.find(x => x.key === "s11");
+  if(st) st.extraFields = [...st.extraFields,
+    {name:"taxPercent", label:"Tax / VAT %", type:"text"},
+    {name:"taxOrder", label:"Apply tax on", type:"select", options:[TAX_ON_ALL, TAX_ON_GOODS], default:TAX_ON_ALL},
+  ];
+})();
+// Tax amount + grand total for a document, honoring the apply-on choice
+function taxAndTotal(doc, itemsSubtotal, chargesAmt){
+  const pct = num(doc && doc.taxPercent);
+  const onGoodsOnly = (doc && doc.taxOrder) === TAX_ON_GOODS;
+  const base = onGoodsOnly ? itemsSubtotal : itemsSubtotal + chargesAmt;
+  const tax = pct ? base * pct / 100 : 0;
+  return { tax, grand: itemsSubtotal + chargesAmt + tax, pct, onGoodsOnly };
+}
 
 // Sum of a document's additional charges. Reads the new extraCharges array; falls back to the
 // legacy single extraChargeLabel/extraChargeAmount pair on docs saved before this feature.
+// Shared particulars from the saved Packing List (s3), carried onto the commercial
+// invoices/contract so the printed set agrees: container, cartons, weights, CBM.
+function packingSummaryFor(s){
+  const pk = (s.documents && s.documents.s3) || null;
+  if(!pk) return null;
+  const rows = (pk.packingItems || []).filter(r => (r.description||"").trim());
+  if(!rows.length && !pk.containerNumber) return null;
+  let cartons = 0, net = 0, gross = 0, cbm = 0;
+  rows.forEach(r => {
+    const tp = num(r.totalPacked);
+    cartons += tp;
+    net += num(r.netWtCtn) * tp;
+    gross += num(r.grossWtCtn) * tp;
+    const L=num(r.lengthIn), W=num(r.widthIn), H=num(r.heightIn);
+    cbm += num(r.totalCBM) || (L*W*H*0.000016387064*tp);
+  });
+  return {
+    containerNumber: pk.containerNumber || "",
+    containerType: pk.containerType || "",
+    cartons, net, gross, cbm
+  };
+}
+
 // "2026-09-10" -> "10-Sep-26" — the date style used in the printed Invoice #/Date box
 function fmtDocDate(iso){
   if(!iso) return "";
@@ -2144,6 +2187,7 @@ function smartDefault(f, s, header, stage){
     return perEntity[f.name] || (settings.bank||{})[f.name] || "";
   }
   if(f.name === "docCurrency") return "AED"; // Saif/UAE-leg invoices default to dirhams
+  if(f.name === "taxPercent") return "5"; // UAE VAT
   if(f.name === "shipperName") return header.exporterEntity || "";
   return f.default || "";
 }
@@ -2183,6 +2227,15 @@ function renderStagePage(s, stageKey){
   // the tax invoice finalizes what was quoted to that UAE customer, not the Babji-leg shipment items.
   const s10Slot = (stageKey === "s11" && s.documents) ? (s.documents[saifSlot("s10", currentSaifSub)] || null) : null;
   const saifProformaItems = (s10Slot && s10Slot.items && s10Slot.items.length) ? s10Slot.items : null;
+  // Prices on the tax invoice are LOCKED to the proforma's — re-synced on every open so a price
+  // corrected on the proforma flows through (quantities stay editable for delivered amounts).
+  const syncS11Prices = rows => {
+    if(stageKey !== "s11" || !saifProformaItems) return rows;
+    return rows.map(it => {
+      const p = saifProformaItems.find(x => (x.description||"").trim().toLowerCase() === (it.description||"").trim().toLowerCase());
+      return p && p.unitPrice ? { ...it, unitPrice: p.unitPrice } : { ...it };
+    });
+  };
   if(s10Slot){
     // mirror the rest of the proforma too (buyer, address, charges) when the tax invoice has no own values yet
     ["buyerOverride","buyerAddress","docCurrency"].forEach(k => {
@@ -2193,10 +2246,28 @@ function renderStagePage(s, stageKey){
     }
   }
   modalChargeRows = stage.hasCharges ? (chargesList(savedDoc).length ? chargesList(savedDoc).map(c => ({...c})) : [emptyCharge()]) : [];
-  modalItemRows = (savedDoc.items && savedDoc.items.length ? savedDoc.items
+  modalItemRows = syncS11Prices((savedDoc.items && savedDoc.items.length ? savedDoc.items
     : (saifProformaItems
       || (isSaifMulti && currentSaifSub > 0 ? [emptyItem()] // extra customers start blank — they take a PART of the container, not all of it
-      : s.items))) || [emptyItem()];
+      : s.items))) || [emptyItem()]);
+  // Shared fields flow FROM the packing list: on invoice/contract pages, each item's quantity
+  // (matched by item name) follows the packed figures — converted back to the invoice's own
+  // unit so a per-DOZEN price stays priced per dozen (packing counts pieces).
+  if(["s4","s5","s6","s7"].includes(stageKey)){
+    const pk = (s.documents && s.documents.s3) || null;
+    if(pk && Array.isArray(pk.packingItems)){
+      modalItemRows = modalItemRows.map(it => ({...it}));
+      modalItemRows.forEach(it => {
+        const row = pk.packingItems.find(r => (r.description||"").trim().toLowerCase() === (it.description||"").trim().toLowerCase());
+        if(!row) return; // item not on the packing list — leave as entered
+        const pcs = num(row.qty) || (num(row.unitPacked) * num(row.totalPacked));
+        if(!pcs) return;
+        const isDozen = String(it.unit||"").trim().toUpperCase() === "DOZEN";
+        const q = isDozen ? pcs / 12 : pcs;
+        it.qty = String(+q.toFixed(2));
+      });
+    }
+  }
   modalItemRows = modalItemRows.map(it => ({...it}));
   packingItemRows = (savedDoc.packingItems && savedDoc.packingItems.length ? savedDoc.packingItems : (s.packingItems && s.packingItems.length ? s.packingItems : derivePackingFromItems(s)));
   packingItemRows = packingItemRows.map(it => ({...it}));
@@ -2824,7 +2895,8 @@ async function saveStageData(shouldPrint, goToStageKey){
     // ledger — this is the UAE leg (customers pay Saif Al Sahra), parallel to the s5 auto-post
     // for the Pakistan leg (Saif Al Sahra pays Babji in USD).
     if(currentStageKey === "s11"){
-      const total = modalItemRows.reduce((sum,it) => sum + num(it.qty)*num(it.unitPrice), 0) + chargesTotal(extraData);
+      const sub11 = modalItemRows.reduce((sum,it) => sum + num(it.qty)*num(it.unitPrice), 0);
+      const total = taxAndTotal(extraData, sub11, chargesTotal(extraData)).grand;
       const custName = (extraData.buyerOverride||"").trim();
       if(total > 0 && custName){
         let cust = consignees.find(c => c.name.toLowerCase() === custName.toLowerCase());
@@ -2849,6 +2921,7 @@ async function saveStageData(shouldPrint, goToStageKey){
     if(!(currentStageKey === "s5" || currentStageKey === "s11")) toast(shouldPrint ? "Saved — opening print view" : "Saved");
     if(shouldPrint){
       docData._shipInvoiceNo = s.invoiceNo || ""; // for the Invoice # box on the packing list (set after save, not persisted)
+      if(["s4","s5","s6","s7"].includes(currentStageKey)) docData._packing = packingSummaryFor(s); // shared particulars from the packing list
       printDocument(stage, headerData, docData, s.ref, s.customer, s.routing);
     }
     if(goToStageKey){ currentStageKey = goToStageKey; }
@@ -2890,17 +2963,24 @@ function printDocument(stage, header, docData, ref, customer, routing){
     </tr>`).join("");
 
   const itemsSubtotal = stage.hasItems ? (docData.items||[]).reduce((sum,it) => sum + num(it.qty)*num(it.unitPrice), 0) : 0;
-  const grandTotal = itemsSubtotal + extraChargeAmt;
+  const tt = taxAndTotal(docData, itemsSubtotal, extraChargeAmt);
+  const grandTotal = tt.grand;
+  const taxRow = tt.tax ? `<tr>
+      <td colspan="4" style="text-align:right;font-style:italic;">VAT / Tax ${escapeHtml(String(+(+tt.pct).toFixed(2)))}% ${tt.onGoodsOnly ? "(on goods)" : "(on goods + charges)"}</td>
+      <td style="text-align:right;font-style:italic;">${printCur} ${tt.tax.toFixed(2)}</td>
+    </tr>` : "";
+  // Row order tells the story: goods-only tax sits before the charge lines, tax-on-everything after them
+  const belowItemsRows = tt.onGoodsOnly ? (taxRow + extraChargeRow) : (extraChargeRow + taxRow);
 
   const itemsTable = stage.hasItems ? `
     <table class="doc-items">
       <thead><tr><th>Description</th><th>HS Code</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
-      <tbody>${itemsRows}${extraChargeRow}</tbody>
+      <tbody>${itemsRows}${belowItemsRows}</tbody>
       ${grandTotal ? `<tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Grand Total</td><td style="text-align:right;font-weight:700">${printCur} ${grandTotal.toFixed(2)}</td></tr></tfoot>` : ""}
     </table>` : "";
 
   const extraRows = stage.extraFields.map(f => {
-    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode","extraChargeLabel","extraChargeAmount","contractNo","contractDate","invoiceDate","certNo","certDate","blNo","blDate","docCurrency"].includes(f.name)) return ""; // shown elsewhere (meta box / bank block / items table)
+    if(["issuerEntity","issuerAddress","buyerOverride","invoiceNo","bankBeneficiary","bankName","accountNo","swiftCode","bankAddress","branchCode","extraChargeLabel","extraChargeAmount","contractNo","contractDate","invoiceDate","certNo","certDate","blNo","blDate","docCurrency","taxPercent","taxOrder"].includes(f.name)) return ""; // shown elsewhere (meta box / bank block / items table)
     const v = docData[f.name];
     if(!v) return "";
     return `<div class="doc-field"><span>${f.label}</span><b>${escapeHtml(v)}</b></div>`;
@@ -3007,6 +3087,7 @@ function printDocument(stage, header, docData, ref, customer, routing){
       <div class="doc-field"><span>Port of Loading:</span><b>${escapeHtml(header.portOfLoading||'')}</b></div>
       <div class="doc-field"><span>Port of Discharge:</span><b>${escapeHtml(header.portOfDischarge||'')}</b></div>
       <div class="doc-field"><span>Final Destination:</span><b>${escapeHtml(header.finalDestination||'')}</b></div>
+      ${docData._packing && docData._packing.containerNumber ? `<div class="doc-field"><span>Container #:</span><b>${escapeHtml(docData._packing.containerNumber)}${docData._packing.containerType ? " (" + escapeHtml(docData._packing.containerType) + ")" : ""}</b></div>` : ""}
       ${extraRows}
     </div>
     ${itemsTable}
