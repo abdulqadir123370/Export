@@ -1494,6 +1494,28 @@ function packingCatalogFill(i){
   if(cat.grossWeightPerCtn) row.grossWeightPerCtn = cat.grossWeightPerCtn;
   document.getElementById("packingEditorWrap").innerHTML = renderPackingItemsEditor();
 }
+// Switching a line between PCS and DOZEN converts qty and unit price together so the line
+// total (and therefore the invoice total) stays exactly the same: 500 DOZEN @ 12.8 <-> 6000 PCS @ 1.0667.
+function itemUnitChanged(i, sel){
+  syncItemRowsFromDom();
+  const it = modalItemRows[i];
+  if(!it){ return; }
+  const prev = (sel.dataset.prev||"").trim().toUpperCase();
+  const next = (sel.value||"").trim().toUpperCase();
+  sel.dataset.prev = sel.value;
+  const qty = num(it.qty), price = num(it.unitPrice);
+  if(prev === "DOZEN" && next === "PCS"){
+    if(qty) it.qty = String(+(qty*12).toFixed(2));
+    if(price) it.unitPrice = String(+(price/12).toFixed(4));
+  } else if(prev === "PCS" && next === "DOZEN"){
+    if(qty) it.qty = String(+(qty/12).toFixed(2));
+    if(price) it.unitPrice = String(+(price*12).toFixed(4));
+  } else {
+    return; // other unit changes: no known conversion — leave numbers as typed
+  }
+  const wrap = document.getElementById("itemsEditorWrap");
+  if(wrap) wrap.innerHTML = renderItemsEditor();
+}
 function itemCatalogFill(i){
   syncItemRowsFromDom();
   const row = modalItemRows[i];
@@ -2246,10 +2268,15 @@ function renderStagePage(s, stageKey){
     }
   }
   modalChargeRows = stage.hasCharges ? (chargesList(savedDoc).length ? chargesList(savedDoc).map(c => ({...c})) : [emptyCharge()]) : [];
-  modalItemRows = syncS11Prices((savedDoc.items && savedDoc.items.length ? savedDoc.items
+  // Babji-leg item documents (invoices + contract) share ONE live item list: the shipment's.
+  // Every one of them opens with the same description/unit/qty carried forward, stays editable,
+  // and an edit saved on any of them propagates to all — no per-document snapshots drifting apart.
+  const sharedItemDoc = ["s4","s5","s6","s7"].includes(stageKey);
+  modalItemRows = syncS11Prices((sharedItemDoc && s.items && s.items.length ? s.items
+    : (savedDoc.items && savedDoc.items.length ? savedDoc.items
     : (saifProformaItems
       || (isSaifMulti && currentSaifSub > 0 ? [emptyItem()] // extra customers start blank — they take a PART of the container, not all of it
-      : s.items))) || [emptyItem()]);
+      : s.items)))) || [emptyItem()]);
   // Shared fields flow FROM the packing list: on invoice/contract pages, each item's quantity
   // (matched by item name) follows the packed figures — converted back to the invoice's own
   // unit so a per-DOZEN price stays priced per dozen (packing counts pieces).
@@ -2475,7 +2502,7 @@ function renderItemsEditor(){
       <td><input data-item="description" data-idx="${i}" value="${escapeHtml(it.description)}" placeholder="Item description" list="catalogItemNames" autocomplete="off" onchange="App.itemCatalogFill(${i})"></td>
       <td><input data-item="hsCode" data-idx="${i}" value="${escapeHtml(it.hsCode)}" placeholder="HS Code"></td>
       <td><input data-item="qty" data-idx="${i}" value="${escapeHtml(it.qty)}" placeholder="Qty"></td>
-      <td><select data-item="unit" data-idx="${i}">${(() => {
+      <td><select data-item="unit" data-idx="${i}" data-prev="${escapeHtml((it.unit||"").trim())}" onchange="App.itemUnitChanged(${i}, this)">${(() => {
         const UNITS = ["DOZEN","PCS","CARTON","SET","PAIR","KG","BOX","BAG","ROLL","BUNDLE"];
         const cur = (it.unit||"").trim();
         // keep a legacy/custom saved value selectable so old docs don't silently change
@@ -3232,7 +3259,7 @@ window.App = {
   addShipment, deleteShipment, openShipment, backToList, selectStage,
   saveStageData, addItemRow, removeItemRow, render: renderApp,
   addPackingItemRow, removePackingItemRow, packingRecalc, recalcCartonsFromItems, markCbmOverride,
-  addChargeRow, removeChargeRow, packingDrvEdited, viewTxnProof, expenseSideChanged,
+  addChargeRow, removeChargeRow, packingDrvEdited, viewTxnProof, expenseSideChanged, itemUnitChanged,
   selectSaifSub, addSaifSub, removeSaifSub,
   packingCbmRowEdited, packingQtyRowEdited,
   addCustomFieldRow, removeCustomFieldRow,
