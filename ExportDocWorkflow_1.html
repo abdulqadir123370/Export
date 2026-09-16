@@ -503,7 +503,10 @@ const STAGES = [
       ...BANK_FIELDS,
     ]},
   { key:"s2", num:2, label:"Loading Sheet", short:"Loading Sheet", color:"var(--green)", hasItems:false, fileUpload:true,
-    extraFields:[]},
+    extraFields:[
+      {name:"refDisplay",label:"Reference Number",type:"text",readonly:true},
+      {name:"invoiceNoDisplay",label:"Invoice Number",type:"text",readonly:true},
+    ]},
   { key:"s3", num:3, label:"Packing List", short:"Packing List", color:"var(--green)", hasItems:false, packingItems:true,
     extraFields:[
       {name:"refDisplay",label:"Reference Number",type:"text",readonly:true},
@@ -766,12 +769,23 @@ function incrementTrailingNumber(str){
 function nextInvoiceNo(){
   const st = getSettings();
   const current = st.invoiceNext || (st.invoiceCounter ? String(st.invoiceCounter) : "1");
-  st.invoiceNext = incrementTrailingNumber(current);
+  let next = incrementTrailingNumber(current);
+  if(next === current) next = current + "-2"; // no trailing digits to increment — never repeat a number
+  st.invoiceNext = next;
   saveSettings(st);
   return current;
 }
 // Preview the number that WOULD be assigned next, without consuming it — used to show a
 // suggestion on real invoice documents before they're actually saved.
+// The shipment's REAL invoice number. s.invoiceNo can be polluted with the plain ref ("5")
+// by old saves — the saved bank invoice's own number is authoritative, and a value equal to
+// the ref is treated as not-assigned.
+function realInvoiceNo(s){
+  const s5no = (s.documents && s.documents.s5 && s.documents.s5.invoiceNo) || "";
+  if(s5no && String(s5no) !== String(s.ref)) return s5no;
+  if(s.invoiceNo && String(s.invoiceNo) !== String(s.ref)) return s.invoiceNo;
+  return "";
+}
 function peekNextInvoiceNo(){
   const st = getSettings();
   return st.invoiceNext || (st.invoiceCounter ? String(st.invoiceCounter) : "1");
@@ -2188,14 +2202,13 @@ async function quickAddConsigneeSubmit(ref){
 function smartDefault(f, s, header, stage){
   const settings = getSettings();
   if(f.name === "invoiceNo"){
-    // Extra Saif customers' proformas get a suffixed ref (6-2, 6-3, ...) so the two customers'
-    // documents are distinguishable at a glance.
+    // Proformas carry the shipment reference; extra Saif customers get a suffixed ref (6-2, ...).
     if(!(stage && REAL_INVOICE_STAGES.includes(stage.key))) return SAIF_MULTI_STAGES.includes(stage && stage.key) && currentSaifSub > 0 ? `${s.ref}-${currentSaifSub+1}` : s.ref;
-    // Extra Saif customers (tab 2+) are SEPARATE real invoices — never suggest the shipment's
-    // shared number (that's customer 1's); preview the next counter value instead. The real
-    // number is drawn at save time.
-    if(stage.key === "s11" && currentSaifSub > 0) return peekNextInvoiceNo();
-    return s.invoiceNo || peekNextInvoiceNo(); // real invoice: reuse the shipment's number once drawn, else preview it
+    // Real invoices: show the ASSIGNED number or nothing. Never a preview — a previewed number
+    // saved without consuming the counter would repeat on the next shipment, which is fatal for
+    // taxation/tracking. Blank means "drawn automatically at save".
+    if(stage.key === "s11" && currentSaifSub > 0) return "";
+    return realInvoiceNo(s) || "";
   }
   if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.ref;
   if(["packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
@@ -2339,9 +2352,9 @@ function renderStagePage(s, stageKey){
       val = (stageKey === "s10" && currentSaifSub > 0) ? `${s.ref}-${currentSaifSub+1}` : s.ref;
     }
     if(f.name === "refDisplay") val = s.ref;
-    if(f.name === "invoiceNoDisplay") val = s.invoiceNo || "(assigned when the bank invoice is saved)";
-    if(f.name === "invoiceNo" && stageKey === "s11" && (val === s.ref || String(val) === String(s.ref))){
-      val = s.invoiceNo || peekNextInvoiceNo(); // stale proforma-style ref leaked into a real invoice
+    if(f.name === "invoiceNoDisplay") val = realInvoiceNo(s) || "(assigned when the bank invoice is saved)";
+    if(f.name === "invoiceNo" && stageKey === "s11" && (currentSaifSub === 0) && (!val || String(val) === String(s.ref))){
+      val = realInvoiceNo(s) || ""; // stale proforma-style ref leaked into a real invoice; blank = auto-drawn at save
     }
     // Bank details must belong to the ISSUER of this document. On Saif Al Sahra docs, a saved
     // value that matches the manufacturing shipper's bank is stale wrong data (from before this
@@ -2850,10 +2863,27 @@ async function saveStageData(shouldPrint, goToStageKey){
     // real-invoice document in this same shipment reuses that same number. This is what stops
     // Proforma-only deals from ever burning a real invoice number.
     const saifSub = SAIF_MULTI_STAGES.includes(currentStageKey) ? currentSaifSub : 0;
-    if(REAL_INVOICE_STAGES.includes(currentStageKey) && saifSub === 0 && !s.invoiceNo){
-      const drawn = nextInvoiceNo();
-      s.invoiceNo = drawn;
-      updates.invoiceNo = drawn;
+    if(REAL_INVOICE_STAGES.includes(currentStageKey) && saifSub === 0){
+      const typed = (extraData.invoiceNo||"").trim();
+      const assigned = realInvoiceNo(s);
+      if(!typed){
+        // blank field: use the shipment's assigned number, drawing a fresh one if none yet
+        const no = assigned || nextInvoiceNo();
+        extraData.invoiceNo = no; docData.invoiceNo = no;
+        if(!assigned){ s.invoiceNo = no; updates.invoiceNo = no; }
+      } else if(typed === String(s.ref)){
+        // a bare ref is never a real invoice number — replace with the assigned/drawn one
+        const no = assigned || nextInvoiceNo();
+        extraData.invoiceNo = no; docData.invoiceNo = no;
+        if(!assigned){ s.invoiceNo = no; updates.invoiceNo = no; }
+      }
+      // a genuinely typed number is respected as-is
+    }
+    // The commercial invoice's own number is the shipment's number (s4/s5/s6 are three formats
+    // of ONE invoice) — repair a shared field polluted with the plain ref by old saves.
+    if(["s4","s5","s6"].includes(currentStageKey) && extraData.invoiceNo && String(extraData.invoiceNo) !== String(s.ref) && s.invoiceNo !== extraData.invoiceNo){
+      s.invoiceNo = extraData.invoiceNo;
+      updates.invoiceNo = extraData.invoiceNo;
     }
     // Extra Saif customers get their OWN invoice number (each customer's tax invoice is a separate
     // real invoice), drawn on the FIRST save of that customer's doc. Draw when the field is empty
@@ -2862,9 +2892,14 @@ async function saveStageData(shouldPrint, goToStageKey){
     if(currentStageKey === "s11" && saifSub > 0){
       const existing = (s.documents && s.documents[saifSlot("s11", saifSub)]) || {};
       const v = (extraData.invoiceNo||"").trim();
-      if(!existing.invoiceNo && (!v || v === s.invoiceNo || v === peekNextInvoiceNo())){
+      const collides = v && (v === String(s.ref) || v === realInvoiceNo(s) || v === (s.invoiceNo||""));
+      if(!existing.invoiceNo && (!v || collides)){
+        // each extra customer's tax invoice is a SEPARATE real invoice — always its own number
         extraData.invoiceNo = nextInvoiceNo();
         docData.invoiceNo = extraData.invoiceNo;
+      } else if(existing.invoiceNo && (!v || collides)){
+        extraData.invoiceNo = existing.invoiceNo; // keep the number already issued to this customer
+        docData.invoiceNo = existing.invoiceNo;
       }
     }
 
@@ -2959,7 +2994,7 @@ async function saveStageData(shouldPrint, goToStageKey){
     pendingUploadFile = null;
     if(!(currentStageKey === "s5" || currentStageKey === "s11")) toast(shouldPrint ? "Saved — opening print view" : "Saved");
     if(shouldPrint){
-      docData._shipInvoiceNo = s.invoiceNo || ""; // for the Invoice # box on the packing list (set after save, not persisted)
+      docData._shipInvoiceNo = realInvoiceNo(s); // for the Invoice # box on the packing list (set after save, not persisted)
       if(["s4","s5","s6","s7"].includes(currentStageKey)) docData._packing = packingSummaryFor(s); // shared particulars from the packing list
       printDocument(stage, headerData, docData, s.ref, s.customer, s.routing);
     }
@@ -3105,7 +3140,7 @@ function printDocument(stage, header, docData, ref, customer, routing){
     </div>
     <div class="doc-meta">
       <div>
-        <div><b>Ref:</b> ${escapeHtml(ref)}</div>
+        ${["s1","s10"].includes(stage.key) ? "" : `<div><b>Ref:</b> ${escapeHtml(ref)}</div>`}
       </div>
       ${(() => {
         // Bordered Invoice # / Date box (matches the real printed document format)
@@ -3308,7 +3343,7 @@ let activeListenerUnsubs = [];
 //  - elsewhere, bursts of snapshot events coalesce into one render
 let liveRenderTimer = null;
 function scheduleLiveRender(){
-  if(view === "detail") return;
+  if(view === "detail"){ clearTimeout(liveRenderTimer); return; } // kill any pending render too — it must never fire into an open form
   const ae = document.activeElement;
   if(ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
   clearTimeout(liveRenderTimer);
