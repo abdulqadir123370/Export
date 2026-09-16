@@ -547,7 +547,6 @@ const STAGES = [
       {name:"buyerOverride",label:"Buyer Name (end customer)",type:"text"},
       {name:"ntn",label:"TRN",type:"text"},
       {name:"salesTaxNo",label:"VAT Number",type:"text"},
-      {name:"taxRate",label:"Tax Rate (%)",type:"text"},
       ...BANK_FIELDS,
     ]},
   { key:"s12", num:12, label:"B/L Copy", short:"B/L Copy", color:"var(--purple)", hasItems:false, fileUpload:true,
@@ -2048,15 +2047,9 @@ function renderShipmentFinancials(s){
   const totalInvoicedStr = sumByCurrency(consigneeTxns, "invoice");
   const totalReceivedStr = sumByCurrency(consigneeTxns, "receipt");
 
-  // Invoice value from Commercial Invoice (Bank), falling back to Customer invoice, then Proforma
-  const invDoc = (s.documents && (s.documents.s5 || s.documents.s4 || s.documents.s1)) || null;
-  const invCurrency = (s.header && s.header.currency) || "USD";
-  const invoiceValue = invDoc && invDoc.items
-    ? invDoc.items.reduce((sum,it) => sum + num(it.qty)*num(it.unitPrice), 0) + chargesTotal(invDoc)
-    : 0;
-  const marginStat = invoiceValue > 0 ? `
-      <div class="stat"><div class="label">Invoice Value</div><div class="value">${escapeHtml(invCurrency)} ${invoiceValue.toLocaleString()}</div></div>
-      <div class="stat"><div class="label">Margin (invoice − PKR expenses)</div><div class="value">${escapeHtml(invCurrency)} ${invoiceValue.toLocaleString()} − PKR ${totalChargesPKR.toLocaleString()}</div></div>` : "";
+  // (Invoice Value / Margin stats removed — they showed the saved bank invoice's snapshot, which
+  // lagged behind item edits and caused confusion. The ledger figures below are the live truth.)
+  const marginStat = "";
 
   const expenseRows = expenseTxns.map(t => {
     const prov = providers.find(p => p.id === t.providerId);
@@ -2903,13 +2896,12 @@ async function saveStageData(shouldPrint, goToStageKey){
         || consignees.find(c => c.name.toLowerCase() === (s.customer||"").toLowerCase());
       if(total > 0 && cons){
         const autoKey = s.id + "_s5";
-        // replace any previous auto entry for this shipment's invoice (re-saves shouldn't double-post)
-        listConsigneeTxns().filter(t => t.autoKey === autoKey).forEach(t => deleteConsigneeTxnRecord(t.id));
-        addConsigneeTxnRecord({
+        // replace any previous auto entry for this shipment's invoice (re-saves must never double-post)
+        await replaceAutoConsigneeTxn(autoKey, {
           consigneeId: cons.id, type: "invoice",
           date: extraData.invoiceDate || new Date().toISOString().slice(0,10),
           amount: total, currency: headerData.currency || "USD",
-          shipmentRef: s.ref, autoKey,
+          shipmentRef: s.ref,
           description: "Auto: Commercial Invoice " + (extraData.invoiceNo || s.ref)
         });
         toast("Saved — invoice total posted to " + cons.name + "'s ledger");
@@ -2930,12 +2922,11 @@ async function saveStageData(shouldPrint, goToStageKey){
           cust = { id: newId, name: custName };
         }
         const autoKey = s.id + "_s11_" + saifSlot("s11", saifSub);
-        listConsigneeTxns().filter(t => t.autoKey === autoKey).forEach(t => deleteConsigneeTxnRecord(t.id));
-        addConsigneeTxnRecord({
+        await replaceAutoConsigneeTxn(autoKey, {
           consigneeId: cust.id, type: "invoice",
           date: extraData.invoiceDate || new Date().toISOString().slice(0,10),
           amount: total, currency: extraData.docCurrency || "AED",
-          shipmentRef: s.ref, autoKey,
+          shipmentRef: s.ref,
           description: "Auto: Tax Invoice " + (extraData.invoiceNo || s.ref) + " (Saif Al Sahra)"
         });
         toast("Saved — AED invoice posted to " + cust.name + "'s ledger");
