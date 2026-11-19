@@ -617,8 +617,8 @@ function packingSummaryFor(s){
   rows.forEach(r => {
     const tp = num(r.totalPacked);
     cartons += tp;
-    net += num(r.netWtCtn) * tp;
-    gross += num(r.grossWtCtn) * tp;
+    net += num(r.netWeightPerCtn) * tp;
+    gross += num(r.grossWeightPerCtn) * tp;
     const L=num(r.lengthIn), W=num(r.widthIn), H=num(r.heightIn);
     cbm += num(r.totalCBM) || (L*W*H*0.000016387064*tp);
   });
@@ -1124,7 +1124,7 @@ function addShipment(){
       header.consignee = header.consignee || header.exporterEntity; // UAE: shipper is consignee ("to order"); buyer is Saif Al Sahra
       header.portOfDischarge = header.portOfDischarge || "Jebel Ali, UAE";
     } else {
-      header.consignee = header.consignee || customer;
+      header.consignee = header.consignee || header.exporterEntity; // direct: shipper is the exporter, never the buyer
     }
     localAdd({
       ref, customer, header,
@@ -1634,6 +1634,17 @@ function renderDataView(){
           <div class="field"><label>Bank Address</label><input id="setBankAddr${i}" type="text" value="${escapeHtml(bank.bankAddress||'')}"></div>
           <div class="field"><label>IBAN #</label><input id="setAcct${i}" type="text" value="${escapeHtml(bank.accountNo||'')}"></div>
           <div class="field"><label>Branch Code</label><input id="setBranch${i}" type="text" value="${escapeHtml(bank.branchCode||'')}"></div>
+        </div>
+        <div class="field-grid" style="margin-top:8px;">
+          ${["sign","stamp"].map(kind => {
+            const img = signStampFor(e)[kind];
+            return `<div class="field"><label>${kind === "sign" ? "Signature" : "Company Stamp"} image (printed on documents)</label>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <div id="ssPrev_${kind}_${i}" style="min-width:90px;height:60px;border:1px dashed var(--border,#bbb);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:.72rem;color:var(--muted);background:#fff;">${img ? `<img src="${img}" style="max-width:120px;max-height:56px;">` : "none"}</div>
+                <label style="background:var(--navy);color:#fff;padding:7px 12px;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;">Upload<input type="file" accept="image/*" style="display:none;" onchange="App.uploadSignStamp(${i},'${kind}',this)"></label>
+                ${img ? `<button type="button" onclick="App.removeSignStamp(${i},'${kind}')" style="background:#c0392b;font-size:.8rem;padding:7px 12px;">Remove</button>` : ""}
+              </div></div>`;
+          }).join("")}
         </div>`;
       }).join("")}
       <div class="section-title">Invoice Numbering</div>
@@ -1679,6 +1690,57 @@ function renderDataView(){
       <div style="font-size:.76rem;color:var(--muted);margin-top:6px;">First row should be column headings. One sheet per file (the first sheet is read).</div>
       ${mappingBlock}
     </div>`;
+}
+
+function signStampFor(entity){
+  const m = (getSettings().signStamp || {})[entity] || {};
+  return { sign: m.sign || "", stamp: m.stamp || "" };
+}
+// Shrinks the uploaded picture (max 500px, PNG so transparency survives) so it stays tiny in Firestore.
+function uploadSignStamp(i, kind, input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const entity = SETTINGS_ENTITIES[i];
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = async () => {
+      const max = 500, r = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      const data = c.toDataURL("image/png");
+      if(data.length > 300000){ toast("Image too detailed — please use a simpler/smaller picture", true); return; }
+      const st = getSettings();
+      st.signStamp = st.signStamp || {};
+      st.signStamp[entity] = st.signStamp[entity] || {};
+      st.signStamp[entity][kind] = data;
+      try{ await saveSettings(st); toast((kind === "sign" ? "Signature" : "Stamp") + " saved for " + entity); }
+      catch(e){ toast("Could not save: " + e.message, true); }
+      const prev = document.getElementById("ssPrev_" + kind + "_" + i);
+      if(prev) prev.innerHTML = `<img src="${data}" style="max-width:120px;max-height:56px;">`;
+    };
+    img.onerror = () => toast("That file is not a readable image", true);
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+  input.value = "";
+}
+async function removeSignStamp(i, kind){
+  const entity = SETTINGS_ENTITIES[i];
+  const st = getSettings();
+  if(st.signStamp && st.signStamp[entity]){ delete st.signStamp[entity][kind]; await saveSettings(st); }
+  const prev = document.getElementById("ssPrev_" + kind + "_" + i);
+  if(prev) prev.innerHTML = "none";
+  toast("Removed");
+}
+// HTML + CSS shared by every printed document: signature above the line, stamp overlapping beside it
+const SIGN_STAMP_CSS = `.sigbox{position:relative;height:90px;}
+    .sigbox img.sg{position:absolute;left:50%;bottom:4px;transform:translateX(-50%);max-height:60px;max-width:170px;}
+    .sigbox img.st{position:absolute;left:58%;bottom:-6px;max-height:84px;max-width:110px;opacity:.9;mix-blend-mode:multiply;}`;
+function signStampHtml(entity){
+  const a = signStampFor(entity);
+  return `<div class="sigbox">${a.sign ? `<img class="sg" src="${a.sign}">` : ""}${a.stamp ? `<img class="st" src="${a.stamp}">` : ""}</div>`;
 }
 
 function saveCompanySettings(){
@@ -2210,7 +2272,8 @@ function smartDefault(f, s, header, stage){
     if(stage.key === "s11" && currentSaifSub > 0) return "";
     return realInvoiceNo(s) || "";
   }
-  if(f.name === "certNo" || f.name === "contractNo" || f.name === "blNo") return s.ref;
+  if(f.name === "contractNo") return realInvoiceNo(s) || s.ref; // the contract carries the shipment's invoice number
+  if(f.name === "certNo" || f.name === "blNo") return s.ref;
   if(["packingDate","certDate","blDate","contractDate"].includes(f.name)) return new Date().toISOString().slice(0,10);
   if(f.name === "issuerAddress") return (settings.exporterAddresses||{})[SAIF_ENTITY] || "";
   if(f.name === "buyerOverride") return s.customer || "";
@@ -2250,8 +2313,9 @@ function renderStagePage(s, stageKey){
     // UAE routing: the shipper is the consignee. Also migrates shipments saved under the
     // old default (where "Saif Al Sahra" sat in this slot) — Saif Al Sahra is the buyer now.
     if(!header.consignee || header.consignee === "Saif Al Sahra") header.consignee = header.exporterEntity || "";
-  } else if(!header.consignee){
-    header.consignee = s.customer || "";
+  } else if(!header.consignee || (header.consignee || "").trim().toLowerCase() === (s.customer || "").trim().toLowerCase()){
+    // direct export: Shipper = the exporting company; it must never equal the Buyer (customer)
+    header.consignee = header.exporterEntity || "";
   }
   if(!header.portOfDischarge && s.routing !== "direct"){
     header.portOfDischarge = "Jebel Ali, UAE";
@@ -2293,6 +2357,16 @@ function renderStagePage(s, stageKey){
     : (saifProformaItems
       || (isSaifMulti && currentSaifSub > 0 ? [emptyItem()] // extra customers start blank — they take a PART of the container, not all of it
       : s.items)))) || [emptyItem()]);
+  // Description / unit / quantity are shared, but each Babji-leg document keeps its OWN unit prices:
+  // the Bank invoice rate is often different from the Customer invoice rate, so a price saved on
+  // one document must never overwrite another's. A document that has no saved price of its own
+  // yet simply starts from the shipment's (proforma) price.
+  if(sharedItemDoc && savedDoc.items && savedDoc.items.length){
+    modalItemRows = modalItemRows.map(it => {
+      const own = savedDoc.items.find(x => (x.description||"").trim().toLowerCase() === (it.description||"").trim().toLowerCase());
+      return (own && String(own.unitPrice||"").trim() !== "") ? {...it, unitPrice: own.unitPrice} : it;
+    });
+  }
   // Shared fields flow FROM the packing list: on invoice/contract pages, each item's quantity
   // (matched by item name) follows the packed figures — converted back to the invoice's own
   // unit so a per-DOZEN price stays priced per dozen (packing counts pieces).
@@ -2309,6 +2383,23 @@ function renderStagePage(s, stageKey){
         const q = isDozen ? pcs / 12 : pcs;
         it.qty = String(+q.toFixed(2));
       });
+      // Items that exist only on the packing list are ADDED to the invoice (price left blank to
+      // fill in) — the packed goods and the invoiced goods must be the same list.
+      pk.packingItems.forEach(row => {
+        const desc = (row.description||"").trim();
+        if(!desc) return;
+        if(modalItemRows.some(it => (it.description||"").trim().toLowerCase() === desc.toLowerCase())) return;
+        const pcs = num(row.qty) || (num(row.unitPacked) * num(row.totalPacked));
+        modalItemRows.push({
+          description: desc,
+          hsCode: row.hsCode || "96039000",
+          qty: pcs ? String(pcs) : "",
+          unit: (String(row.uom||"").trim().toUpperCase() === "DOZEN") ? "DOZEN" : "PCS",
+          unitPrice: ""
+        });
+      });
+      // drop fully-empty placeholder rows left behind
+      if(modalItemRows.length > 1) modalItemRows = modalItemRows.filter(it => (it.description||"").trim() || num(it.qty) || num(it.unitPrice));
     }
   }
   modalItemRows = modalItemRows.map(it => ({...it}));
@@ -2339,7 +2430,7 @@ function renderStagePage(s, stageKey){
   // (shown next to Buyer Name there). On UAE manufacturer docs the buyer is Saif Al Sahra, so hide it.
   const hideBuyerAddress = isSaifDoc || s.routing !== "direct";
   const headerFieldsHtml = HEADER_FIELDS
-    .filter(f => !(isSaifDoc && (f.name === "exporterEntity" || f.name === "exporterAddress")))
+    .filter(f => !(isSaifDoc && (f.name === "exporterEntity" || f.name === "exporterAddress" || f.name === "currency")))
     .filter(f => !(hideBuyerAddress && f.name === "buyerAddress"))
     .map(f => `
     <div class="field"><label>${f.label}</label>${fieldInput(f, header[f.name])}</div>`).join("");
@@ -2517,7 +2608,7 @@ function shipperChanged(entity){
   // (only if the field still holds an auto-set company name; a hand-typed value is left alone).
   const ship = shipments.find(x => x.id === currentShipId);
   const consEl = document.querySelector('#headerFields [data-field="consignee"]');
-  if(ship && ship.routing !== "direct" && consEl && (!consEl.value || SETTINGS_ENTITIES.includes(consEl.value))){
+  if(ship && consEl && (!consEl.value || SETTINGS_ENTITIES.includes(consEl.value) || consEl.value.trim().toLowerCase() === (ship.customer||"").trim().toLowerCase())){
     consEl.value = entity;
   }
 }
@@ -2924,7 +3015,20 @@ async function saveStageData(shouldPrint, goToStageKey){
       docData.items = modalItemRows;
       // Saif docs carry a customer-specific AED item list — never push it back onto the
       // shipment-level items that all the Babji-leg documents share.
-      if(!SAIF_MULTI_STAGES.includes(currentStageKey)) updates.items = modalItemRows;
+      if(!SAIF_MULTI_STAGES.includes(currentStageKey)){
+        if(["s4","s5","s6","s7"].includes(currentStageKey)){
+          // share description/unit/qty/HS with the shipment, but keep the shipment's existing prices —
+          // this document's own prices live only in this document
+          const shipNow = shipments.find(x => x.id === currentShipId);
+          const prevItems = (shipNow && shipNow.items) || [];
+          updates.items = modalItemRows.map(it => {
+            const prev = prevItems.find(x => (x.description||"").trim().toLowerCase() === (it.description||"").trim().toLowerCase());
+            return prev ? {...it, unitPrice: prev.unitPrice} : it;
+          });
+        } else {
+          updates.items = modalItemRows;
+        }
+      }
     }
 
     updates[`documents.${saifSlot(currentStageKey, saifSub)}`] = docData;
@@ -2994,7 +3098,7 @@ async function saveStageData(shouldPrint, goToStageKey){
     pendingUploadFile = null;
     if(!(currentStageKey === "s5" || currentStageKey === "s11")) toast(shouldPrint ? "Saved — opening print view" : "Saved");
     if(shouldPrint){
-      docData._shipInvoiceNo = realInvoiceNo(s); // for the Invoice # box on the packing list (set after save, not persisted)
+      docData._shipInvoiceNo = realInvoiceNo(s); // the shipment's real invoice number, for any printed doc's Invoice # box (set after save, not persisted)
       if(["s4","s5","s6","s7"].includes(currentStageKey)) docData._packing = packingSummaryFor(s); // shared particulars from the packing list
       printDocument(stage, headerData, docData, s.ref, s.customer, s.routing);
     }
@@ -3046,10 +3150,29 @@ function printDocument(stage, header, docData, ref, customer, routing){
   // Row order tells the story: goods-only tax sits before the charge lines, tax-on-everything after them
   const belowItemsRows = tt.onGoodsOnly ? (taxRow + extraChargeRow) : (extraChargeRow + taxRow);
 
+  // Quantity totals, summed per unit so "12,540 PCS · 500 DOZEN" never mixes units into one number
+  const qtyTotalsRow = (() => {
+    if(!stage.hasItems) return "";
+    const m = {};
+    (docData.items||[]).forEach(it => {
+      const q = num(it.qty);
+      if(!q) return;
+      const u = (it.unit||"").trim().toUpperCase() || "PCS";
+      m[u] = (m[u]||0) + q;
+    });
+    const qtyStr = Object.entries(m).map(([u,v]) => v.toLocaleString() + " " + u).join(" · ");
+    if(!qtyStr) return "";
+    return `<tr>
+      <td colspan="2" style="text-align:right;font-weight:700">Total</td>
+      <td style="text-align:right;font-weight:700">${escapeHtml(qtyStr)}</td>
+      <td></td>
+      <td style="text-align:right;font-weight:700">${itemsSubtotal ? printCur + " " + itemsSubtotal.toFixed(2) : ""}</td>
+    </tr>`;
+  })();
   const itemsTable = stage.hasItems ? `
     <table class="doc-items">
       <thead><tr><th>Description</th><th>HS Code</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
-      <tbody>${itemsRows}${belowItemsRows}</tbody>
+      <tbody>${itemsRows}${qtyTotalsRow}${belowItemsRows}</tbody>
       ${grandTotal ? `<tfoot><tr><td colspan="4" style="text-align:right;font-weight:700">Grand Total</td><td style="text-align:right;font-weight:700">${printCur} ${grandTotal.toFixed(2)}</td></tr></tfoot>` : ""}
     </table>` : "";
 
@@ -3126,7 +3249,8 @@ function printDocument(stage, header, docData, ref, customer, routing){
     table.doc-items{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:.85rem;}
     table.doc-items th{background:#0d2b52;color:#fff;padding:8px;text-align:left;}
     table.doc-items td{padding:7px 8px;border-bottom:1px solid #ddd;}
-    .signatures{display:flex;justify-content:space-between;margin-top:60px;}
+    .signatures{display:flex;justify-content:space-between;margin-top:30px;}
+    ${SIGN_STAMP_CSS}
     .sig{width:200px;border-top:1px solid #333;padding-top:6px;font-size:.8rem;text-align:center;color:#555;}
     @media print{ body{padding:10mm;} }
   </style></head>
@@ -3144,7 +3268,7 @@ function printDocument(stage, header, docData, ref, customer, routing){
       </div>
       ${(() => {
         // Bordered Invoice # / Date box (matches the real printed document format)
-        const docNo = docData.invoiceNo || docData.contractNo || docData.certNo || docData.blNo || ref;
+        const docNo = docData.invoiceNo || docData.contractNo || docData._shipInvoiceNo || ref;
         const rawDate = docData.invoiceDate||docData.contractDate||docData.blDate||docData.certDate||docData.loadingDate||docData.packingDate||'';
         const fmtDate = fmtDocDate(rawDate);
         const noLabel = ["s1","s10"].includes(stage.key) ? "Ref #" : "Invoice #"; // proformas never carry an invoice number
@@ -3156,7 +3280,7 @@ function printDocument(stage, header, docData, ref, customer, routing){
     </div>
     <div class="parties">
       <div class="party"><h4>Buyer</h4><div>${escapeHtml(buyerName)}</div>${buyerAddress ? `<div class="addr-line">${escapeHtml(buyerAddress)}</div>` : `<div class="addr-missing">No address on file</div>`}</div>
-      ${showConsignee ? `<div class="party"><h4>Shipper</h4>${escapeHtml(header.consignee||'')}</div>` : ''}
+      ${showConsignee ? `<div class="party"><h4>Shipper</h4>${escapeHtml(((!header.consignee || String(header.consignee).trim().toLowerCase() === String(buyerName||"").trim().toLowerCase()) ? (header.exporterEntity || header.consignee) : header.consignee) || '')}</div>` : ''}
     </div>
     <div class="doc-fields">
       <div class="doc-field"><span>Port of Loading:</span><b>${escapeHtml(header.portOfLoading||'')}</b></div>
@@ -3174,8 +3298,8 @@ function printDocument(stage, header, docData, ref, customer, routing){
       <div class="doc-field"><span>Payment Terms:</span><b>${escapeHtml(header.paymentTerms||'')}</b></div>
     </div>
     <div class="signatures">
-      <div class="sig">Prepared By</div>
-      <div class="sig">Authorized Signatory</div>
+      <div class="sig" style="border-top:none;padding-top:0;"><div class="sigbox"></div><div style="border-top:1px solid #333;padding-top:6px;">Prepared By</div></div>
+      <div class="sig" style="border-top:none;padding-top:0;width:240px;">${signStampHtml(letterheadCompany)}<div style="border-top:1px solid #333;padding-top:6px;">Authorized Signatory</div></div>
     </div>
     ${bankBlock}
   </body></html>`;
@@ -3237,6 +3361,7 @@ function printPackingList(header, docData, ref, customer, routing){
     tfoot td{font-weight:700;}
     .sig{margin-top:70px;width:280px;}
     .sig .line{border-top:1px solid #333;text-align:center;padding-top:5px;font-size:.8rem;}
+    ${SIGN_STAMP_CSS}
     .section-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.5px;color:#888;font-weight:700;margin:18px 0 8px;border-top:1px solid #ddd;padding-top:12px;}
     .doc-fields{display:flex;flex-wrap:wrap;gap:10px 26px;}
     .doc-field{font-size:.85rem;display:flex;gap:6px;}
@@ -3293,7 +3418,8 @@ function printPackingList(header, docData, ref, customer, routing){
     </table>
     ${docData.remarks ? `<div class="section-label">Remarks</div><div style="font-size:.85rem;white-space:pre-wrap;">${escapeHtml(docData.remarks)}</div>` : ''}
     ${(docData.customFields||[]).filter(f=>f.label&&f.value).length ? `<div class="section-label">Additional Info</div><div class="doc-fields">${(docData.customFields||[]).filter(f=>f.label&&f.value).map(f=>`<div class="doc-field"><span>${escapeHtml(f.label)}:</span><b>${escapeHtml(f.value)}</b></div>`).join("")}</div>` : ''}
-    <div class="sig">
+    <div class="sig" style="margin-top:30px;">
+      ${signStampHtml(header.exporterEntity||'BABJI MANUFACTURING')}
       <div class="line">${escapeHtml(header.exporterEntity||'BABJI MANUFACTURING').toUpperCase()}</div>
     </div>
   </body></html>`;
@@ -3316,7 +3442,7 @@ window.App = {
   duplicateShipment, editShipmentCustomer,
   showShipmentsTab, showLedgerTab, showExpensesTab, showConsigneesTab, showCatalogTab, showDataTab,
   addCatalogItem, removeCatalogItem, packingCatalogFill, itemCatalogFill,
-  importTargetChanged, importFileSelected, runImport, saveCompanySettings,
+  importTargetChanged, importFileSelected, runImport, saveCompanySettings, uploadSignStamp, removeSignStamp,
   downloadBackup, restoreBackup, exportLedgerExcel, whatsappReminder, shipperChanged,
   addProvider, deleteProvider, openLedger, backToExpenses, addTxn, deleteTxn,
   addConsignee, deleteConsignee, openConsigneeLedger, backToConsignees, addConsigneeTxn, deleteConsigneeTxn,
